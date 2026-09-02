@@ -117,28 +117,6 @@ internal static class BuildingStorageScanner
         };
     }
 
-    public static int ScaleCapacity(int currentCapacity, decimal multiplier)
-    {
-        if (currentCapacity < 0)
-        {
-            throw new InvalidDataException($"仓库容量原始值无效：{currentCapacity}。 ");
-        }
-
-        if (currentCapacity == 0) return 0;
-        var storageUnits = decimal.Round(
-            currentCapacity / (decimal)StorageUnit * multiplier,
-            0,
-            MidpointRounding.AwayFromZero);
-        var scaled = storageUnits * StorageUnit;
-        if (scaled < 0 || scaled > int.MaxValue)
-        {
-            throw new ArgumentException(
-                $"仓库上限乘以 {multiplier:0.##} 后超出存档可写范围，请选择更小的倍数。 ");
-        }
-
-        return checked((int)scaled);
-    }
-
     public static string FormatCapacity(int rawValue)
     {
         return rawValue >= 0 && rawValue % StorageUnit == 0

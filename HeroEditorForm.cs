@@ -38,6 +38,7 @@ internal sealed record PendingAdvancedEdit(
 
 internal sealed class HeroEditorForm : Form
 {
+    private const string AppVersion = "v36";
     private static readonly Color Background = Color.White;
     private static readonly Color Surface = Color.FromArgb(247, 247, 247);
     private static readonly Color SurfaceRaised = Color.White;
@@ -61,6 +62,7 @@ internal sealed class HeroEditorForm : Form
     private bool _refreshingSlots;
     private bool _busy;
     private bool _dirty;
+    private bool _suppressPendingTracking;
     private bool _suppressSelection;
     private CancellationTokenSource? _loadCts;
     private CancellationTokenSource? _unitInputCts;
@@ -96,10 +98,7 @@ internal sealed class HeroEditorForm : Form
     private decimal _selectedMultiplier = 1m;
     private bool _loadingMultiplier;
 
-    private bool _pendingBuildingStorage;
-    private decimal _pendingBuildingMultiplier = 1m;
     private NumericUpDown? _resourceBatchMultiplier;
-    private NumericUpDown? _buildingBatchMultiplier;
     private Label? _buildingReadbackLabel;
     private ToolTip? _buildingReadbackTip;
     private ResourceListResponse? _resourceReadback;
@@ -124,7 +123,7 @@ internal sealed class HeroEditorForm : Form
     {
         _defaultSaveRoot = GetDefaultSaveRoot();
         _saveRoot = _defaultSaveRoot;
-        Text = "烽沙 · 存档编辑器";
+        Text = $"烽沙 · 存档编辑器 {AppVersion}";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1120, 640);
         ClientSize = new Size(1280, 760);
@@ -175,7 +174,7 @@ internal sealed class HeroEditorForm : Form
             Renderer = new LightToolStripRenderer()
         };
 
-        var brand = new ToolStripLabel("烽沙 · 存档编辑器")
+        var brand = new ToolStripLabel($"烽沙 · 存档编辑器 {AppVersion}")
         {
             Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold),
             ForeColor = TextPrimary,
@@ -201,7 +200,7 @@ internal sealed class HeroEditorForm : Form
         };
         foreach (var multiplier in SupportedMultipliers())
         {
-            _multiplierPicker.Items.Add(new MultiplierChoice(multiplier, $"{multiplier:0.##} 倍"));
+            _multiplierPicker.Items.Add(new MultiplierChoice(multiplier, $"{multiplier:0} 倍"));
         }
         _multiplierPicker.SelectedIndexChanged += (_, _) => MultiplierChanged();
         _multiplierPicker.SelectedIndex = 0;
@@ -407,13 +406,12 @@ internal sealed class HeroEditorForm : Form
             Dock = DockStyle.Top,
             AutoSize = true,
             ColumnCount = 2,
-            RowCount = 2,
+            RowCount = 1,
             BackColor = Color.Transparent,
             Padding = new Padding(0)
         };
         rows.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         rows.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
 
         _buildingReadbackLabel = SecondaryLabel("当前存档：尚未读取");
@@ -440,24 +438,8 @@ internal sealed class HeroEditorForm : Form
         {
             if (!_loadingBatchInputs) StageResourceBatchMultiplier(_resourceBatchMultiplier.Value);
         };
-        _buildingBatchMultiplier = BatchMultiplierBox();
-        _buildingBatchMultiplier.ValueChanged += (_, _) =>
-        {
-            if (!_loadingBatchInputs) StageBuildingBatchMultiplier(_buildingBatchMultiplier.Value);
-        };
-        _buildingBatchMultiplier.TextChanged += (_, _) =>
-        {
-            if (!_loadingBatchInputs) UpdateGlobalStatus();
-        };
-        _buildingBatchMultiplier.Validated += (_, _) =>
-        {
-            if (!_loadingBatchInputs) StageBuildingBatchMultiplier(_buildingBatchMultiplier.Value);
-        };
-
         rows.Controls.Add(BatchMultiplierLabel("矿产（几倍）"), 0, 0);
         rows.Controls.Add(_resourceBatchMultiplier, 1, 0);
-        rows.Controls.Add(BatchMultiplierLabel("仓库（几倍）"), 0, 1);
-        rows.Controls.Add(_buildingBatchMultiplier, 1, 1);
         page.Controls.Add(rows);
         page.Controls.Add(_buildingReadbackLabel);
         UpdateBuildingReadbackDisplay();
@@ -683,15 +665,6 @@ internal sealed class HeroEditorForm : Form
                     : BuildResourceReadbackTip(_resourceReadback));
         }
 
-        if (_buildingBatchMultiplier is not null)
-        {
-            _buildingReadbackTip.SetToolTip(
-                _buildingBatchMultiplier,
-                _buildingReadback is null
-                    ? "填写本次仓库上限的倍数：1 倍=不修改，2 倍=当前存档上限×2。"
-                    : BuildBuildingReadbackTip(_buildingReadback));
-        }
-
         var readbackTip = new List<string>();
         if (_resourceReadback is not null) readbackTip.Add(BuildResourceReadbackTip(_resourceReadback));
         if (_buildingReadback is not null) readbackTip.Add(BuildBuildingReadbackTip(_buildingReadback));
@@ -721,7 +694,7 @@ internal sealed class HeroEditorForm : Form
             .ToList();
         return "当前存档已读取：\r\n"
             + (rows.Count == 0 ? "没有识别到仓库。" : string.Join("\r\n", rows))
-            + "\r\n\r\n输入框填写本次修改倍数：1 倍=不修改。";
+            + "\r\n\r\n仓库总容量由游戏运行时计算，当前版本不写入该数值。";
     }
 
     private static string FormatSavedResourceCapacity(int rawValue)
@@ -988,7 +961,7 @@ internal sealed class HeroEditorForm : Form
         var args = new List<string>
         {
             "--resource", category,
-            "--resource-multiplier", multiplier.ToString("0.##", CultureInfo.InvariantCulture)
+            "--resource-multiplier", multiplier.ToString("0", CultureInfo.InvariantCulture)
         };
         if (configId.HasValue) { args.Add("--resource-config"); args.Add(configId.Value.ToString()); }
         if (preview) args.Add("--dry-run");
@@ -1040,16 +1013,24 @@ internal sealed class HeroEditorForm : Form
 
         if (!await RunWriteBatchAsync(operations)) return;
 
-        // 写回成功后先清空暂存状态，再从磁盘重新读取当前页面。
-        // 最后一遍清理是为了防止控件在回读期间触发 ValueChanged，
-        // 把已经写入存档的值错误地重新标记成“待保存”。
-        ClearPendingEdits();
-        ResetMultiplierSelection();
-        await ReloadCurrentTabAsync();
-        ClearPendingEdits();
+        // 写回成功后，回读页面会改变 NumericUpDown、选择框和网格。
+        // 这些控件的事件不能被当成用户修改，否则保存成功后会再次出现“待保存”。
+        _suppressPendingTracking = true;
+        try
+        {
+            ClearPendingEdits();
+            ResetMultiplierSelection();
+            await ReloadCurrentTabAsync();
+        }
+        finally
+        {
+            ClearPendingEdits();
+            _suppressPendingTracking = false;
+        }
+
         _dirty = false;
         UpdateGlobalStatus();
-        _statusLabel.Text = "修改已保存，已重新读取存档";
+        _statusLabel.Text = "修改已保存，待保存状态已清除";
     }
 
     private List<IReadOnlyList<string>> BuildPendingWriteArgs()
@@ -1069,16 +1050,6 @@ internal sealed class HeroEditorForm : Form
         if (_pendingAllResources)
         {
             operations.Add(BuildResourceArgs("*", null, _pendingAllResourceMultiplier, false).Append("--yes").ToArray());
-        }
-
-        if (_pendingBuildingStorage)
-        {
-            operations.Add(new[]
-            {
-                "--building-multiplier",
-                _pendingBuildingMultiplier.ToString("0.##", CultureInfo.InvariantCulture),
-                "--yes"
-            });
         }
 
         foreach (var edit in _pendingPlayerEdits.Values.OrderBy(edit => edit.Attribute, StringComparer.OrdinalIgnoreCase))
@@ -1107,7 +1078,6 @@ internal sealed class HeroEditorForm : Form
         var parts = new List<string>();
         if (_pendingUnitEdits.Count > 0) parts.Add($"单位属性 {_pendingUnitEdits.Count:N0} 项");
         if (_pendingAllResources) parts.Add($"全部矿产 × {FormatMultiplier(_pendingAllResourceMultiplier)}");
-        if (_pendingBuildingStorage) parts.Add($"全部仓库 × {FormatMultiplier(_pendingBuildingMultiplier)}");
         if (_pendingPlayerEdits.Count > 0) parts.Add($"玩家属性 {_pendingPlayerEdits.Count:N0} 项");
         if (_pendingAdvancedEdits.Count > 0) parts.Add($"高级功能 {_pendingAdvancedEdits.Count:N0} 项");
         return parts.Count == 0 ? "无" : string.Join("、", parts);
@@ -1120,13 +1090,10 @@ internal sealed class HeroEditorForm : Form
         _pendingAdvancedEdits.Clear();
         _pendingAllResources = false;
         _pendingAllResourceMultiplier = 1m;
-        _pendingBuildingStorage = false;
-        _pendingBuildingMultiplier = 1m;
         _loadingBatchInputs = true;
         try
         {
             if (_resourceBatchMultiplier is not null) _resourceBatchMultiplier.Value = 1m;
-            if (_buildingBatchMultiplier is not null) _buildingBatchMultiplier.Value = 1m;
         }
         finally
         {
@@ -1404,6 +1371,7 @@ internal sealed class HeroEditorForm : Form
 
     private void MarkDirty()
     {
+        if (_suppressPendingTracking) return;
         if (!_suppressSelection) _dirty = HasPendingEdits();
         UpdateGlobalStatus();
     }
@@ -1412,7 +1380,7 @@ internal sealed class HeroEditorForm : Form
         [1m, 2m, 5m, 10m, 20m, 50m, 100m];
 
     private static string FormatMultiplier(decimal multiplier) =>
-        multiplier.ToString("0.##", CultureInfo.InvariantCulture) + "倍";
+        multiplier.ToString("0", CultureInfo.InvariantCulture) + "倍";
 
     private void ResetMultiplierSelection()
     {
@@ -1456,7 +1424,7 @@ internal sealed class HeroEditorForm : Form
                 ApplyUnitMultiplier();
                 break;
             case "buildings":
-                // 建筑页由“矿产（倍数）”和“仓库（倍数）”两个输入框直接暂存。
+                // 建筑页的“矿产（几倍）”输入框直接暂存。
                 break;
             case "player":
                 ApplyPlayerMultiplier();
@@ -1469,6 +1437,7 @@ internal sealed class HeroEditorForm : Form
 
     private void StageResourceBatchMultiplier(decimal multiplier)
     {
+        if (_suppressPendingTracking) return;
         if (multiplier == 1m)
         {
             _pendingAllResources = false;
@@ -1483,16 +1452,9 @@ internal sealed class HeroEditorForm : Form
         MarkDirty();
     }
 
-    private void StageBuildingBatchMultiplier(decimal multiplier)
-    {
-        _pendingBuildingStorage = multiplier != 1m;
-        _pendingBuildingMultiplier = multiplier;
-        MarkDirty();
-    }
-
     private void SyncBatchInputs()
     {
-        if (_loadingBatchInputs) return;
+        if (_loadingBatchInputs || _suppressPendingTracking) return;
 
         if (_resourceBatchMultiplier is not null)
         {
@@ -1501,12 +1463,6 @@ internal sealed class HeroEditorForm : Form
             _pendingAllResourceMultiplier = multiplier;
         }
 
-        if (_buildingBatchMultiplier is not null)
-        {
-            var multiplier = _buildingBatchMultiplier.Value;
-            _pendingBuildingStorage = multiplier != 1m;
-            _pendingBuildingMultiplier = multiplier;
-        }
     }
 
     private void ApplyUnitMultiplier()
@@ -1597,6 +1553,7 @@ internal sealed class HeroEditorForm : Form
 
     private void StageUnitInput(string attribute, NumericUpDown input)
     {
+        if (_suppressPendingTracking) return;
         var single = _unitSingleRadio?.Checked == true;
         var instance = (int)(_unitInstance?.Value ?? 0);
         var value = ToStorageValue(attribute, input.Value);
@@ -1618,6 +1575,7 @@ internal sealed class HeroEditorForm : Form
 
     private void StagePlayerInput()
     {
+        if (_suppressPendingTracking) return;
         var attribute = SelectedPlayerAttribute();
         var value = ToStorageValue(attribute, _playerValue?.Value ?? 0);
         var initial = _playerStates.TryGetValue(attribute, out var state) ? ParseFirstInteger(state) : null;
@@ -1636,6 +1594,7 @@ internal sealed class HeroEditorForm : Form
 
     private void StageAdvancedInput(string key, NumericUpDown input)
     {
+        if (_suppressPendingTracking) return;
         if (!_advancedOperations.TryGetValue(key, out var operation)) return;
         var value = ToStorageValue(operation.Attribute, input.Value);
         if (_advancedInitialValues.TryGetValue(key, out var initial) && value == initial)
@@ -1718,8 +1677,7 @@ internal sealed class HeroEditorForm : Form
         return _pendingUnitEdits.Count > 0
             || _pendingPlayerEdits.Count > 0
             || _pendingAdvancedEdits.Count > 0
-            || _pendingAllResources
-            || _pendingBuildingStorage;
+            || _pendingAllResources;
     }
 
     private void UpdateUnitSummary()
@@ -2062,11 +2020,11 @@ internal sealed class HeroEditorForm : Form
                 TextAlign = ContentAlignment.MiddleLeft,
                 Padding = new Padding(0, 0, 8, 0)
             };
-        var isMultiplier = IsMultiplierAttribute(attribute);
-        var input = NumberBox(
-            FromStorageValue(attribute, defaultValue(attribute)),
-            decimalPlaces: isMultiplier ? 2 : 0,
-            increment: isMultiplier ? 0.1m : 1m);
+            var isMultiplier = IsMultiplierAttribute(attribute);
+            var input = NumberBox(
+                FromStorageValue(attribute, defaultValue(attribute)),
+                decimalPlaces: isMultiplier ? 2 : 0,
+                increment: isMultiplier ? 0.1m : 1m);
             input.Width = 240;
             input.Margin = new Padding(0, 4, 0, 4);
             input.ValueChanged += (_, _) =>
@@ -2377,7 +2335,7 @@ internal sealed class HeroEditorForm : Form
 
     private static NumericUpDown BatchMultiplierBox()
     {
-        var input = NumberBox(1m, 1m, 1_000m, decimalPlaces: 2, increment: 0.5m);
+        var input = NumberBox(1m, 1m, 1_000m, decimalPlaces: 0, increment: 1m);
         input.Width = 180;
         input.Height = 34;
         input.ThousandsSeparator = false;

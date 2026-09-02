@@ -80,7 +80,7 @@ internal static class Program
     private const int DefaultLockedResourceAmount = 9_999_999;
     private const int MaxResourceAmount = 1_000_000_000;
     private const int ResourceStorageUnit = 256;
-    private const decimal MinResourceMultiplier = 0.1m;
+    private const decimal MinResourceMultiplier = 1m;
     private const decimal MaxResourceMultiplier = 1000m;
     private static readonly string[] RoadTokens =
     [
@@ -193,10 +193,11 @@ internal static class Program
                             CultureInfo.InvariantCulture,
                             out var resourceMultiplier)
                         || resourceMultiplier < MinResourceMultiplier
-                        || resourceMultiplier > MaxResourceMultiplier)
+                        || resourceMultiplier > MaxResourceMultiplier
+                        || decimal.Truncate(resourceMultiplier) != resourceMultiplier)
                     {
                         throw new ArgumentException(
-                            $"--resource-multiplier 必须是 {MinResourceMultiplier:0.##} 到 {MaxResourceMultiplier:0.##} 之间的数字。 ");
+                            $"--resource-multiplier 必须是 {MinResourceMultiplier:0} 到 {MaxResourceMultiplier:0} 之间的整数。 ");
                     }
 
                     options.ResourceMultiplier = resourceMultiplier;
@@ -209,10 +210,11 @@ internal static class Program
                             CultureInfo.InvariantCulture,
                             out var buildingMultiplier)
                         || buildingMultiplier < MinResourceMultiplier
-                        || buildingMultiplier > MaxResourceMultiplier)
+                        || buildingMultiplier > MaxResourceMultiplier
+                        || decimal.Truncate(buildingMultiplier) != buildingMultiplier)
                     {
                         throw new ArgumentException(
-                            $"--building-multiplier 必须是 {MinResourceMultiplier:0.##} 到 {MaxResourceMultiplier:0.##} 之间的数字。 ");
+                            $"--building-multiplier 必须是 {MinResourceMultiplier:0} 到 {MaxResourceMultiplier:0} 之间的整数。 ");
                     }
 
                     options.BuildingMultiplier = buildingMultiplier;
@@ -554,6 +556,12 @@ internal static class Program
             return 0;
         }
 
+        if (options.BuildingMultiplier.HasValue)
+        {
+            throw new InvalidOperationException(
+                "当前版本不会写入仓库总容量。存档中只识别到仓库内物品上限，修改它不会改变游戏显示的 2,000；已拒绝写入。 ");
+        }
+
         if (options.ListResources)
         {
             var resourceSlot = ResolveSlot(saveRoot, options.Slot);
@@ -674,16 +682,6 @@ internal static class Program
                 options.DryRun);
         }
 
-        if (options.BuildingMultiplier.HasValue)
-        {
-            return ModifyBuildingStorageSlot(
-                slot,
-                options.BuildingMultiplier.Value,
-                options.OodlePath,
-                options.Yes,
-                options.DryRun);
-        }
-
         if (options.AttributeName is not null)
         {
             return ModifyUnitSlot(
@@ -777,7 +775,7 @@ internal static class Program
             ? "各自最大容量模式"
             : lockMode ? "大储量/锁定模式" : "指定数量模式";
         var targetDescription = multiplier.HasValue
-            ? $"把每个资源点最大上限和当前数量设为当前存档上限的 {multiplier.Value:0.##} 倍"
+            ? $"把每个资源点最大上限和当前数量设为当前存档上限的 {multiplier.Value:0} 倍"
             : safeAllMode
             ? "保留每个资源点原有最大容量，并把当前数量补满到各自上限"
             : $"容量和当前数量设为 {targetAmount:N0}";
@@ -832,7 +830,7 @@ internal static class Program
             Console.WriteLine("资源修改成功：匹配的全部资源点已写回，并通过完整解压回读。");
             if (multiplier.HasValue)
             {
-                Console.WriteLine($"说明：按每个资源点当前存档上限的 {multiplier.Value:0.##} 倍写入，并同步补满当前数量；存档内部按 1 显示单位 = {ResourceStorageUnit} 原始值换算。 ");
+                Console.WriteLine($"说明：按每个资源点当前存档上限的 {multiplier.Value:0} 倍写入，并同步补满当前数量；存档内部按 1 显示单位 = {ResourceStorageUnit} 原始值换算。 ");
             }
             else if (safeAllMode)
             {
@@ -883,91 +881,10 @@ internal static class Program
         if (scaled < ResourceStorageUnit || scaled > int.MaxValue)
         {
             throw new ArgumentException(
-                $"资源上限乘以 {multiplier:0.##} 后超出存档可写范围，请选择更小的倍数。 ");
+                $"资源上限乘以 {multiplier:0} 后超出存档可写范围，请选择更小的倍数。 ");
         }
 
         return checked((int)scaled);
-    }
-
-    private static int ModifyBuildingStorageSlot(
-        string slot,
-        decimal multiplier,
-        string? oodlePath,
-        bool confirmed,
-        bool dryRun)
-    {
-        EnsureLevelSlot(slot);
-        using var oodle = LoadOodle(oodlePath);
-        var analysis = AnalyzeBuildingStorageFile(Path.Combine(slot, "Level.sav"), oodle);
-        PrintBuildingStorageAnalysis(analysis, "真正仓库修改前扫描");
-
-        var entries = analysis.Scan.Records
-            .SelectMany(record => record.Items)
-            .ToList();
-        var targets = entries.ToDictionary(
-            entry => entry.ValueOffset,
-            entry => BuildingStorageScanner.ScaleCapacity(entry.CurrentCapacity, multiplier));
-        var unchanged = entries.All(entry => entry.CurrentCapacity == targets[entry.ValueOffset]);
-        Console.WriteLine(
-            $"目标：将 {analysis.Scan.Records.Count:N0} 个真正仓库（辎重库、粮仓、军械库）的 {entries.Count:N0} 个现有储存类别上限，按各自当前值放大到 {multiplier:0.##} 倍。不存在的储存类别不会创建。 ");
-        if (unchanged)
-        {
-            Console.WriteLine("匹配的仓库上限已经是目标值，不需要重新压缩或写入。");
-            return 0;
-        }
-
-        if (dryRun)
-        {
-            Console.WriteLine("预览模式：没有修改存档。");
-            return 0;
-        }
-
-        if (!confirmed && !Confirm("确认修改辎重库、粮仓和军械库的储存上限？"))
-        {
-            Console.WriteLine("已取消，没有写入。");
-            return 0;
-        }
-
-        WarnIfGameRunning();
-        Console.WriteLine("提示：工具不会自动备份，请在保存前自行备份整个存档槽。");
-
-        var patchedRaw = (byte[])analysis.Document.Raw.Clone();
-        foreach (var entry in entries)
-        {
-            BinaryPrimitives.WriteInt32LittleEndian(
-                patchedRaw.AsSpan(4 + entry.ValueOffset, 4),
-                targets[entry.ValueOffset]);
-        }
-
-        var levelPath = Path.Combine(slot, "Level.sav");
-        var tempPath = levelPath + $".fengsha-new-{Guid.NewGuid():N}.tmp";
-        try
-        {
-            var candidate = analysis.Container.Recompress(patchedRaw, oodle);
-            WriteDurable(tempPath, candidate);
-            var candidateAnalysis = AnalyzeBuildingStorageFile(tempPath, oodle);
-            ValidateBuildingStorageCandidate(analysis, candidateAnalysis, patchedRaw, targets);
-            Console.WriteLine($"候选文件校验通过：{candidate.Length:N0} 字节，CRC32 0x{candidateAnalysis.Container.ActualPayloadCrc:X8}。");
-
-            WarnIfGameRunning();
-            File.Move(tempPath, levelPath, overwrite: true);
-            var finalAnalysis = AnalyzeBuildingStorageFile(levelPath, oodle);
-            ValidateBuildingStorageCandidate(analysis, finalAnalysis, patchedRaw, targets);
-            Console.WriteLine();
-            PrintBuildingStorageAnalysis(finalAnalysis, "写回后回读");
-            Console.WriteLine("真正仓库修改成功：所有已存在的储存类别上限已写回，并通过完整解压回读。");
-            Console.WriteLine($"说明：按每个储存类别当前上限的 {multiplier:0.##} 倍写入；没有储存类别的建筑不会被补出新类别。 ");
-            return 0;
-        }
-        catch
-        {
-            if (File.Exists(tempPath))
-            {
-                File.Delete(tempPath);
-            }
-
-            throw;
-        }
     }
 
     private static void ValidateBuildingStorageCandidate(
@@ -1971,7 +1888,7 @@ internal static class Program
 
     private static void PrintHelp()
     {
-        Console.WriteLine("烽沙存档修改器");
+        Console.WriteLine("烽沙存档修改器 v36");
         Console.WriteLine();
         Console.WriteLine("双击 FengshaSaveEditor.exe 可进入图形界面。游戏运行中也可写入，但请避免游戏同时保存。");
         Console.WriteLine();
@@ -1986,7 +1903,6 @@ internal static class Program
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --resource all --resource-multiplier 100 --yes");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --resource 铁矿 --resource-config 33536 --resource-multiplier 10 --yes");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --list-building-storage --json");
-        Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --building-multiplier 2 --yes");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --list-resources");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --unit 民夫 --attribute 攻击 --value 999 --yes");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --unit 民夫 --attribute 生命 --value 1000 --yes");
@@ -2005,11 +1921,11 @@ internal static class Program
         Console.WriteLine("  --speed N       把当前槽位全部已存在民夫速度设为 N，默认 2000；是绝对值，重复运行不会叠加。");
         Console.WriteLine("  --resource C    选择资源类别；支持 IronOre/铁矿、Jujube/枣子林、HuntingAnimal/狩猎区域，也支持 all/全部。");
         Console.WriteLine("  --resource-amount N  兼容旧命令：按存档原始值写入容量和当前数量；图形界面和新命令请优先使用 --resource-multiplier。");
-        Console.WriteLine("  --resource-multiplier X  按每个资源点当前存档上限的 X 倍提高容量，并把当前数量补满；支持 0.1 到 1000，例如 2、5、10、100。");
+        Console.WriteLine("  --resource-multiplier X  按每个资源点当前存档上限的 X 倍提高容量，并把当前数量补满；只能填写整数，例如 2、5、10、100。");
         Console.WriteLine("  --resource-max       把匹配资源点当前数量补满到各自最大容量，不修改最大容量。");
         Console.WriteLine("  --resource-lock  使用 9999999 的大储量模式；这是存档补满，不是常驻内存锁定。");
         Console.WriteLine("  图形界面可在顶部选择 1/2/5/10/20/50/100 倍；资源页可勾选“全部资源使用当前倍数”。");
-        Console.WriteLine("  --building-multiplier X  按每座辎重库、粮仓、军械库的各个现有储存类别上限乘以 X；不存在的类别不会创建。");
+        Console.WriteLine("  --building-multiplier X  当前停用：存档没有游戏显示的仓库总容量字段，避免把物品上限误当成总容量写入。 ");
         Console.WriteLine("  --resource-config N  只处理指定 ConfigID 的资源档位；不填则处理该类别全部档位。");
         Console.WriteLine("  --unit U         选择单位；支持民夫、兵种名称、自有兵种或 all/全部。");
         Console.WriteLine("                  自有兵种只筛选民夫、常规兵种和攻城器械，不包含野兽、建筑、城防设施。");
