@@ -417,10 +417,18 @@ internal sealed class HeroEditorForm : Form
         {
             if (!_loadingBatchInputs) StageResourceBatchMultiplier(_resourceBatchMultiplier.Value);
         };
+        _resourceBatchMultiplier.TextChanged += (_, _) =>
+        {
+            if (!_loadingBatchInputs) UpdateGlobalStatus();
+        };
         _buildingBatchMultiplier = BatchMultiplierBox();
         _buildingBatchMultiplier.ValueChanged += (_, _) =>
         {
             if (!_loadingBatchInputs) StageBuildingBatchMultiplier(_buildingBatchMultiplier.Value);
+        };
+        _buildingBatchMultiplier.TextChanged += (_, _) =>
+        {
+            if (!_loadingBatchInputs) UpdateGlobalStatus();
         };
 
         rows.Controls.Add(BatchMultiplierLabel("矿产（几倍）"), 0, 0);
@@ -868,6 +876,8 @@ internal sealed class HeroEditorForm : Form
 
     private List<IReadOnlyList<string>> BuildPendingWriteArgs()
     {
+        // 保存时重新读取批量输入框，不依赖输入事件的触发时序。
+        SyncBatchInputs();
         var operations = new List<IReadOnlyList<string>>();
         foreach (var edit in _pendingUnitEdits.Values
                      .OrderBy(edit => edit.UnitType, StringComparer.OrdinalIgnoreCase)
@@ -1109,7 +1119,7 @@ internal sealed class HeroEditorForm : Form
             return;
         }
 
-        if (_dirty)
+        if (HasPendingEdits())
         {
             var answer = MessageBox.Show(
                 "当前有尚未写入存档的修改，退出后这些修改会丢失。确定退出吗？",
@@ -1290,6 +1300,25 @@ internal sealed class HeroEditorForm : Form
         _pendingBuildingStorage = multiplier != 1m;
         _pendingBuildingMultiplier = multiplier;
         MarkDirty();
+    }
+
+    private void SyncBatchInputs()
+    {
+        if (_loadingBatchInputs) return;
+
+        if (_resourceBatchMultiplier is not null)
+        {
+            var multiplier = _resourceBatchMultiplier.Value;
+            _pendingAllResources = multiplier != 1m;
+            _pendingAllResourceMultiplier = multiplier;
+        }
+
+        if (_buildingBatchMultiplier is not null)
+        {
+            var multiplier = _buildingBatchMultiplier.Value;
+            _pendingBuildingStorage = multiplier != 1m;
+            _pendingBuildingMultiplier = multiplier;
+        }
     }
 
     private void ApplyUnitMultiplier()
@@ -1496,7 +1525,9 @@ internal sealed class HeroEditorForm : Form
             || _pendingPlayerEdits.Count > 0
             || _pendingAdvancedEdits.Count > 0
             || _pendingAllResources
-            || _pendingBuildingStorage;
+            || _pendingBuildingStorage
+            || (_resourceBatchMultiplier?.Value ?? 1m) != 1m
+            || (_buildingBatchMultiplier?.Value ?? 1m) != 1m;
     }
 
     private void UpdateUnitSummary()
