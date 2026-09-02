@@ -638,7 +638,9 @@ internal static class Program
             var target = targets[node.RegionStart];
             return node.CurrentCapacity == target.Capacity && node.CurrentAmount == target.CurrentAmount;
         });
-        var mode = lockMode ? "大储量/锁定模式" : "指定数量模式";
+        var mode = safeAllMode
+            ? "各自最大容量模式"
+            : lockMode ? "大储量/锁定模式" : "指定数量模式";
         var targetDescription = safeAllMode
             ? "保留每个资源点原有最大容量，并把当前数量补满到各自上限"
             : $"容量和当前数量设为 {targetAmount:N0}";

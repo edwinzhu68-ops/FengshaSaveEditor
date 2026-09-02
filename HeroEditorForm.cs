@@ -406,7 +406,7 @@ internal sealed class HeroEditorForm : Form
         };
         _resourceAmountText.TextChanged += (_, _) => { if (!_loadingResourceInputs) StageResourceInput(); };
         var resourceTip = new ToolTip();
-        _resourceAll = new CheckBox { Text = "全部资源统一为 99,999", AutoSize = true, ForeColor = TextPrimary, Checked = false };
+        _resourceAll = new CheckBox { Text = "全部资源补满（各自最大上限）", AutoSize = true, ForeColor = TextPrimary, Checked = false };
         resourceTip.SetToolTip(_resourceAll, "把所有资源点当前数量补满到各自最大容量，不修改资源最大容量，避免游戏加载异常。");
         _resourceAll.CheckedChanged += (_, _) =>
         {
@@ -1664,7 +1664,7 @@ internal sealed class HeroEditorForm : Form
         _loadingResourceInputs = true;
         var editKey = GetResourceEditKey(item.Category, item.ConfigId);
         _resourceAmountText.Text = _resourceAll?.Checked == true
-            ? "99999"
+            ? "自动补满"
             : _pendingResourceEdits.TryGetValue(editKey, out var pending)
                 ? pending.Amount.ToString(CultureInfo.InvariantCulture)
             : item.CurrentAmount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
