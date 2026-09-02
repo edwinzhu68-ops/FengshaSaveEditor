@@ -321,8 +321,10 @@ internal sealed class HeroEditorForm : Form
             UpdateGlobalStatus();
         };
 
-        tabs.TabPages.Add(MakeTab("resources", "资源", BuildResourcesPage()));
+        tabs.TabPages.Add(MakeTab("units", "单位属性", BuildUnitsPage()));
         tabs.TabPages.Add(MakeTab("buildings", "建筑", BuildBuildingsPage()));
+        tabs.TabPages.Add(MakeTab("player", "玩家属性", BuildPlayerPage()));
+        tabs.TabPages.Add(MakeTab("advanced", "高级功能", BuildAdvancedPage()));
         tabs.SelectedIndex = 0;
         return tabs;
     }
@@ -477,6 +479,42 @@ internal sealed class HeroEditorForm : Form
 
     private Control BuildBuildingsPage()
     {
+        var page = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Horizontal,
+            SplitterWidth = 6,
+            BackColor = Background,
+            BorderStyle = BorderStyle.None
+        };
+        page.SizeChanged += (_, _) => ConfigureHorizontalSplit(page);
+        page.HandleCreated += (_, _) =>
+        {
+            try
+            {
+                page.BeginInvoke((Action)(() => ConfigureHorizontalSplit(page)));
+            }
+            catch (ObjectDisposedException)
+            {
+                // 窗口关闭过程中不再调整分栏。
+            }
+            catch (InvalidOperationException)
+            {
+                // 控件尚未进入消息循环时，SizeChanged 会在布局完成后再次触发。
+            }
+        };
+
+        var resources = BuildResourcesPage();
+        resources.Dock = DockStyle.Fill;
+        page.Panel1.Controls.Add(resources);
+        var warehouses = BuildWarehouseSection();
+        warehouses.Dock = DockStyle.Fill;
+        page.Panel2.Controls.Add(warehouses);
+        return page;
+    }
+
+    private Control BuildWarehouseSection()
+    {
         var split = NewEditorSplit();
         var left = new Panel { Dock = DockStyle.Fill, BackColor = Surface, Padding = new Padding(10) };
         left.Paint += DrawBorder;
@@ -490,7 +528,7 @@ internal sealed class HeroEditorForm : Form
         split.Panel1.Controls.Add(left);
 
         var right = EditorPanel();
-        right.Controls.Add(PageHeading("建筑", "只修改真正仓库的储存上限"));
+        right.Controls.Add(PageHeading("仓库", "只修改真正仓库的储存上限"));
         _buildingSelectedLabel = ValueLabel("未选择建筑");
         right.Controls.Add(FormLine("当前建筑", _buildingSelectedLabel, ""));
         _buildingCurrentStateLabel = SecondaryLabel("当前上限：尚未读取");
@@ -789,6 +827,7 @@ internal sealed class HeroEditorForm : Form
                     await LoadResourceChoicesAsync(cancellation.Token);
                     break;
                 case "buildings":
+                    await LoadResourceChoicesAsync(cancellation.Token);
                     await LoadBuildingChoicesAsync(cancellation.Token);
                     break;
                 case "player":
@@ -1527,7 +1566,7 @@ internal sealed class HeroEditorForm : Form
             _slotPicker.SelectedIndex = index >= 0 ? index : slots.Count > 0 ? 0 : -1;
             _slotPath = _slotPicker.SelectedItem is HeroSlotChoice choice ? choice.Path : null;
             UpdateGlobalStatus();
-            _ = LoadPageAsync(_tabs.SelectedTab?.Name ?? "resources");
+            _ = LoadPageAsync(_tabs.SelectedTab?.Name ?? "units");
         }
         finally
         {
@@ -1543,7 +1582,7 @@ internal sealed class HeroEditorForm : Form
         ResetMultiplierSelection();
         _dirty = false;
         UpdateGlobalStatus();
-        _ = LoadPageAsync(_tabs.SelectedTab?.Name ?? "resources");
+        _ = LoadPageAsync(_tabs.SelectedTab?.Name ?? "units");
     }
 
     private void UpdateGlobalStatus()
@@ -1621,24 +1660,11 @@ internal sealed class HeroEditorForm : Form
                 ApplyUnitMultiplier();
                 break;
             case "resources":
-                if (_resourceAll?.Checked == true)
-                {
-                    _pendingAllResources = true;
-                    _pendingAllResourceMultiplier = _selectedMultiplier;
-                    MarkDirty();
-                }
-                else
-                {
-                    StageResourceMultiplier();
-                }
+                ApplyResourceMultiplier();
                 break;
             case "buildings":
-                if (_buildingAll?.Checked == true)
-                {
-                    _pendingBuildingStorage = _selectedMultiplier != 1m;
-                    _pendingBuildingMultiplier = _selectedMultiplier;
-                    MarkDirty();
-                }
+                ApplyResourceMultiplier();
+                ApplyBuildingMultiplier();
                 break;
             case "player":
                 ApplyPlayerMultiplier();
@@ -1647,6 +1673,28 @@ internal sealed class HeroEditorForm : Form
                 ApplyAdvancedMultiplier();
                 break;
         }
+    }
+
+    private void ApplyResourceMultiplier()
+    {
+        if (_resourceAll?.Checked == true)
+        {
+            _pendingAllResources = true;
+            _pendingAllResourceMultiplier = _selectedMultiplier;
+            MarkDirty();
+            return;
+        }
+
+        if (_selectedResourceConfigId.HasValue) StageResourceMultiplier();
+    }
+
+    private void ApplyBuildingMultiplier()
+    {
+        if (_buildingAll?.Checked != true) return;
+
+        _pendingBuildingStorage = _selectedMultiplier != 1m;
+        _pendingBuildingMultiplier = _selectedMultiplier;
+        MarkDirty();
     }
 
     private void ApplyUnitMultiplier()
@@ -2220,6 +2268,39 @@ internal sealed class HeroEditorForm : Form
             catch (ArgumentException)
             {
                 // 控件正在销毁时忽略最后一次布局调整。
+            }
+        }
+    }
+
+    private static void ConfigureHorizontalSplit(SplitContainer split)
+    {
+        if (split.IsDisposed || split.Height <= split.SplitterWidth) return;
+
+        var available = split.Height - split.SplitterWidth;
+        var panel1Min = Math.Min(260, available / 2);
+        var panel2Min = Math.Min(260, Math.Max(0, available - panel1Min));
+        var maxDistance = Math.Max(panel1Min, split.Height - panel2Min);
+        var target = Math.Clamp(split.Height / 2, panel1Min, maxDistance);
+
+        try
+        {
+            split.Panel1MinSize = 0;
+            split.Panel2MinSize = 0;
+            split.SplitterDistance = Math.Clamp(target, 0, split.Height);
+            split.Panel1MinSize = panel1Min;
+            split.Panel2MinSize = panel2Min;
+        }
+        catch (ArgumentException)
+        {
+            try
+            {
+                split.Panel1MinSize = 0;
+                split.Panel2MinSize = 0;
+                split.SplitterDistance = Math.Clamp(split.Height / 2, 0, split.Height);
+            }
+            catch (ArgumentException)
+            {
+                // 控件正在创建或销毁时忽略最后一次布局调整。
             }
         }
     }
