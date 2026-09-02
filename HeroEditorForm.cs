@@ -854,6 +854,16 @@ internal sealed class HeroEditorForm : Form
     private async Task SaveAllPendingAsync()
     {
         if (!EnsureSlot()) return;
+        if (IsGameRunning())
+        {
+            MessageBox.Show(
+                "请先完全退出《烽沙》，再点击保存修改。游戏运行时会用内存中的建筑数据覆盖仓库容量。",
+                "请先退出游戏",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
         var operations = BuildPendingWriteArgs();
         if (operations.Count == 0)
         {
@@ -1201,10 +1211,10 @@ internal sealed class HeroEditorForm : Form
         var files = _slotPath is null ? 0 : CountRequiredFiles(_slotPath);
         _fileStatusLabel.Text = $"文件 {files}/4";
         _fileStatusLabel.ForeColor = files == 4 ? Green : files >= 2 ? Warning : TextMuted;
-        _gameStatusLabel.Text = running ? "游戏运行中 · 可写" : "游戏未运行";
+        _gameStatusLabel.Text = running ? "游戏运行中 · 请退出后保存" : "游戏未运行";
         _gameStatusLabel.ForeColor = running ? Red : Green;
-        _saveButton.Enabled = !_busy && _slotPath is not null && HasPendingEdits();
-        _statusLabel.Text = _busy ? "正在处理…" : HasPendingEdits() ? "有待保存的修改" : running ? "游戏运行中，可直接保存" : "就绪";
+        _saveButton.Enabled = !_busy && !running && _slotPath is not null && HasPendingEdits();
+        _statusLabel.Text = _busy ? "正在处理…" : HasPendingEdits() ? running ? "游戏运行中，保存已禁用" : "有待保存的修改" : running ? "游戏运行中，请退出后保存" : "就绪";
     }
 
     private void SetDirtySummary(string text)
