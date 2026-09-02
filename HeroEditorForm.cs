@@ -24,6 +24,27 @@ internal sealed record HeroSlotChoice(
     public override string ToString() => $"{Name}    ·    {FileCount}/4 个核心文件";
 }
 
+internal sealed record PendingUnitEdit(
+    string UnitType,
+    string Attribute,
+    int Value,
+    bool SingleInstance,
+    int InstanceIndex);
+
+internal sealed record PendingResourceEdit(
+    string Category,
+    int? ConfigId,
+    int Amount);
+
+internal sealed record PendingPlayerEdit(string Attribute, int Value);
+
+internal sealed record PendingAdvancedEdit(
+    string Key,
+    string Kind,
+    string Attribute,
+    string Unit,
+    int Value);
+
 internal sealed class HeroEditorForm : Form
 {
     private static readonly Color Background = Color.White;
@@ -70,6 +91,7 @@ internal sealed class HeroEditorForm : Form
     private readonly Dictionary<string, NumericUpDown> _unitAttributeInputs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _unitInitialValues = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _unitChangedAttributes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PendingUnitEdit> _pendingUnitEdits = new(StringComparer.OrdinalIgnoreCase);
     private bool _loadingUnitInputs;
     private NumericUpDown? _unitInstance;
     private RadioButton? _unitAllRadio;
@@ -85,6 +107,9 @@ internal sealed class HeroEditorForm : Form
     private Label? _resourceCurrentStateLabel;
     private TextBox? _resourceAmountText;
     private CheckBox? _resourceAll;
+    private readonly Dictionary<string, PendingResourceEdit> _pendingResourceEdits = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int?> _resourceInitialAmounts = new(StringComparer.OrdinalIgnoreCase);
+    private bool _pendingAllResources;
     private bool _loadingResourceInputs;
 
     private DataGridView? _playerGrid;
@@ -93,11 +118,13 @@ internal sealed class HeroEditorForm : Form
     private Label? _playerSelectedLabel;
     private Dictionary<string, string> _playerStates = new(StringComparer.OrdinalIgnoreCase);
     private NumericUpDown? _playerValue;
+    private readonly Dictionary<string, PendingPlayerEdit> _pendingPlayerEdits = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly Dictionary<string, NumericUpDown> _advancedInputs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (string Kind, string Attribute, string Unit)> _advancedOperations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PendingAdvancedEdit> _pendingAdvancedEdits = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _advancedInitialValues = new(StringComparer.OrdinalIgnoreCase);
     private bool _loadingAdvancedInputs;
-    private string _advancedMode = "MinFuMoveSpeed";
 
     public HeroEditorForm()
     {
@@ -165,6 +192,11 @@ internal sealed class HeroEditorForm : Form
         toolbar.Items.Add(ToolButton("重新读取", async (_, _) => await ReloadCurrentTabAsync()));
         _saveButton = ToolButton("保存修改", async (_, _) => await ApplyCurrentTabAsync());
         toolbar.Items.Add(_saveButton);
+        toolbar.Items.Add(new ToolStripLabel("请先备份存档，避免损坏")
+        {
+            ForeColor = Warning,
+            Margin = new Padding(8, 0, 0, 0)
+        });
         return toolbar;
     }
 
@@ -306,7 +338,7 @@ internal sealed class HeroEditorForm : Form
         _unitInstance = NumberBox(0, 0, 1_000_000);
         _unitInstance.Width = 90;
         _unitInstance.Enabled = false;
-        _unitInstance.ValueChanged += (_, _) => MarkDirty();
+        _unitInstance.ValueChanged += (_, _) => UpdateUnitSummary();
         _unitAllRadio.CheckedChanged += (_, _) => { _unitInstance.Enabled = !_unitAllRadio.Checked; UpdateUnitSummary(); };
         _unitSingleRadio.CheckedChanged += (_, _) => { _unitInstance.Enabled = _unitSingleRadio.Checked; UpdateUnitSummary(); };
         scope.Controls.Add(_unitAllRadio);
@@ -326,7 +358,6 @@ internal sealed class HeroEditorForm : Form
         var actions = ActionBar();
         actions.Controls.Add(SmallButton("读取当前值", async (_, _) => await RunUnitReadAsync()));
         actions.Controls.Add(SmallButton("预览", async (_, _) => await PreviewUnitAsync()));
-        actions.Controls.Add(PrimaryButton("保存修改", async (_, _) => await ApplyUnitAsync()));
         right.Controls.Add(actions);
         _unitGrid.SelectionChanged += (_, _) =>
         {
@@ -373,12 +404,13 @@ internal sealed class HeroEditorForm : Form
             BorderStyle = BorderStyle.FixedSingle,
             PlaceholderText = "输入目标数量"
         };
-        _resourceAmountText.TextChanged += (_, _) => { if (!_loadingResourceInputs) MarkDirty(); };
+        _resourceAmountText.TextChanged += (_, _) => { if (!_loadingResourceInputs) StageResourceInput(); };
         var resourceTip = new ToolTip();
         _resourceAll = new CheckBox { Text = "全部资源统一为 99,999", AutoSize = true, ForeColor = TextPrimary, Checked = false };
         resourceTip.SetToolTip(_resourceAll, "把所有已识别资源类别、所有规模的资源点都改为 99,999；这是一次性存档修改，采集后仍可能减少。");
         _resourceAll.CheckedChanged += (_, _) =>
         {
+            if (!_loadingResourceInputs) _pendingAllResources = _resourceAll.Checked;
             if (_resourceAll?.Checked == true)
             {
                 if (_resourceGrid is not null) _resourceGrid.Enabled = false;
@@ -396,7 +428,7 @@ internal sealed class HeroEditorForm : Form
                 if (_resourceAmountText is not null) _resourceAmountText.Enabled = true;
                 if (_resourceGrid?.CurrentRow?.Tag is HeroEditorResourceRow item) SelectResourceRow(item);
             }
-            MarkDirty();
+            if (!_loadingResourceInputs) MarkDirty();
         };
         right.Controls.Add(FormLine("目标数量", _resourceAmountText, ""));
         right.Controls.Add(FormLine("批量设置", _resourceAll, ""));
@@ -404,7 +436,6 @@ internal sealed class HeroEditorForm : Form
         var actions = ActionBar();
         actions.Controls.Add(SmallButton("读取资源", async (_, _) => await RunReadOnlyAsync("--list-resources")));
         actions.Controls.Add(SmallButton("预览", async (_, _) => await PreviewResourceAsync()));
-        actions.Controls.Add(PrimaryButton("保存修改", async (_, _) => await ApplyResourceAsync()));
         right.Controls.Add(actions);
         _resourceGrid.SelectionChanged += (_, _) =>
         {
@@ -436,12 +467,11 @@ internal sealed class HeroEditorForm : Form
         _playerSelectedLabel = ValueLabel(GetEditorLabel(_selectedPlayerAttribute));
         right.Controls.Add(FormLine("当前属性", _playerSelectedLabel, ""));
         _playerValue = NumberBox(FromStorageValue(_selectedPlayerAttribute, DefaultPlayerAttributeValue(_selectedPlayerAttribute)));
-        _playerValue.ValueChanged += (_, _) => { if (!_suppressSelection) MarkDirty(); };
+        _playerValue.ValueChanged += (_, _) => { if (!_suppressSelection) StagePlayerInput(); };
         right.Controls.Add(FormLine("目标值", _playerValue, ""));
         var actions = ActionBar();
         actions.Controls.Add(SmallButton("读取属性", async (_, _) => await RunReadOnlyAsync("--list-player-attributes")));
         actions.Controls.Add(SmallButton("预览", async (_, _) => await PreviewPlayerAsync()));
-        actions.Controls.Add(PrimaryButton("保存修改", async (_, _) => await ApplyPlayerAsync()));
         right.Controls.Add(actions);
         _playerGrid.SelectionChanged += (_, _) =>
         {
@@ -467,7 +497,7 @@ internal sealed class HeroEditorForm : Form
         grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         grid.Controls.Add(PageHeading("高级功能", ""), 0, 0);
-        var note = SecondaryLabel("当前值自动从存档读取；所有民夫只改当前存档民夫，全部自有兵种包含民夫、常规兵种和攻城器械，不包含野兽、建筑、城防设施；1 倍就是游戏默认值。所有功能免费开放。");
+        var note = SecondaryLabel("当前值自动从存档读取；修改会先暂存在本工具中，点击顶部“保存修改”后才写入。所有民夫只改当前存档民夫，全部自有兵种包含民夫、常规兵种和攻城器械，不包含野兽、建筑、城防设施；1 倍就是游戏默认值。");
         grid.Controls.Add(note, 0, 1);
 
         _advancedInputs.Clear();
@@ -695,19 +725,7 @@ internal sealed class HeroEditorForm : Form
         AppendLog("已重新读取当前页面。");
     }
 
-    private async Task ApplyCurrentTabAsync()
-    {
-        switch (_tabs.SelectedTab?.Name)
-        {
-            case "units": await ApplyUnitAsync(); break;
-            case "resources": await ApplyResourceAsync(); break;
-            case "player": await ApplyPlayerAsync(); break;
-            case "advanced":
-                await ApplyAdvancedAsync();
-                break;
-            default: AppendLog("当前页面没有可保存的字段。"); break;
-        }
-    }
+    private async Task ApplyCurrentTabAsync() => await SaveAllPendingAsync();
 
     private async Task LoadUnitChoicesAsync(CancellationToken cancellationToken)
     {
@@ -787,8 +805,16 @@ internal sealed class HeroEditorForm : Form
                 if (!_unitAttributeInputs.TryGetValue(pair.Key, out var input)) continue;
                 var item = payload.Attributes.FirstOrDefault(attribute => attribute.Key.Equals(pair.Key, StringComparison.OrdinalIgnoreCase));
                 var rawValue = item is null ? DefaultUnitAttributeValue(pair.Key) : ParseFirstInteger(item.Current) ?? DefaultUnitAttributeValue(pair.Key);
-                SetInputFromStorage(input, pair.Key, rawValue);
                 _unitInitialValues[pair.Key] = rawValue;
+                if (TryGetPendingUnitEdit(unitType, pair.Key, out var pending))
+                {
+                    SetInputFromStorage(input, pair.Key, pending.Value);
+                    _unitChangedAttributes.Add(pair.Key);
+                }
+                else
+                {
+                    SetInputFromStorage(input, pair.Key, rawValue);
+                }
             }
             _loadingUnitInputs = false;
         }
@@ -811,6 +837,7 @@ internal sealed class HeroEditorForm : Form
             var result = await RunCliAsync(BuildCliArgs("--list-resources", "--json"), cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             var payload = ParseCliJson<ResourceListResponse>(result, "资源目录");
+            _resourceInitialAmounts.Clear();
             var rows = payload.Nodes
                 .Select(item => new HeroEditorResourceRow(
                     item.Label,
@@ -821,6 +848,10 @@ internal sealed class HeroEditorForm : Form
                     item.Capacity,
                     item.CurrentAmount))
                 .ToList();
+            foreach (var item in rows)
+            {
+                _resourceInitialAmounts[GetResourceEditKey(item.Category, item.ConfigId)] = item.CurrentAmount;
+            }
             cancellationToken.ThrowIfCancellationRequested();
             PopulateResourceGrid(rows);
         }
@@ -891,7 +922,15 @@ internal sealed class HeroEditorForm : Form
                     : playerPayload.Attributes.FirstOrDefault(attribute => attribute.Key.Equals(pair.Value.Attribute, StringComparison.OrdinalIgnoreCase))
                         ?.Current;
                 var rawValue = ParseFirstInteger(current) ?? DefaultAdvancedAttributeValue(pair.Value.Attribute);
-                if (_advancedInputs.TryGetValue(pair.Key, out var input)) SetInputFromStorage(input, pair.Value.Attribute, rawValue);
+                _advancedInitialValues[pair.Key] = rawValue;
+                if (_pendingAdvancedEdits.TryGetValue(pair.Key, out var pending))
+                {
+                    if (_advancedInputs.TryGetValue(pair.Key, out var pendingInput)) SetInputFromStorage(pendingInput, pair.Value.Attribute, pending.Value);
+                }
+                else if (_advancedInputs.TryGetValue(pair.Key, out var input))
+                {
+                    SetInputFromStorage(input, pair.Value.Attribute, rawValue);
+                }
             }
             _loadingAdvancedInputs = false;
         }
@@ -930,41 +969,42 @@ internal sealed class HeroEditorForm : Form
         SetDirtySummary($"{UnitScanner.GetUnitLabel(_selectedUnitType)} · {changes.Count} 项");
     }
 
-    private async Task ApplyUnitAsync()
-    {
-        if (!EnsureSlot()) return;
-        var changes = GetUnitChanges();
-        if (changes.Count == 0)
-        {
-            MessageBox.Show("请先在右侧修改至少一个数值。", "没有待保存修改", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-        var scope = _unitSingleRadio?.Checked == true
-            ? $"第 {(int)(_unitInstance?.Value ?? 0) + 1} 个匹配单位区域（该区域内全部字段）"
-            : "全部匹配单位区域";
-        var changedNames = string.Join("、", changes.Take(8).Select(change => GetEditorLabel(change.Attribute)));
-        if (changes.Count > 8) changedNames += $" 等 {changes.Count} 项";
-        if (MessageBox.Show($"单位：{UnitScanner.GetUnitLabel(_selectedUnitType)}\r\n修改：{changedNames}\r\n范围：{scope}\r\n\r\n保存前会自动备份整个槽位。{LiveWriteWarning()}\r\n继续吗？", "保存修改", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
-        var operations = changes.Select(change => BuildUnitWriteArgs(change.Attribute, change.Value, false)).ToList();
-        await RunWriteBatchAsync("单位属性", operations);
-    }
-
     private List<(string Attribute, int Value)> GetUnitChanges()
     {
-        return _unitChangedAttributes
-            .Where(attribute => _unitAttributeInputs.ContainsKey(attribute))
-            .OrderBy(attribute => UnitScanner.GetAttributeLabel(attribute), StringComparer.Ordinal)
-            .Select(attribute => (attribute, ToStorageValue(attribute, _unitAttributeInputs[attribute].Value)))
+        var single = _unitSingleRadio?.Checked == true;
+        var instance = (int)(_unitInstance?.Value ?? 0);
+        return _pendingUnitEdits.Values
+            .Where(edit => edit.UnitType.Equals(_selectedUnitType, StringComparison.OrdinalIgnoreCase))
+            .Where(edit => edit.SingleInstance == single && (!single || edit.InstanceIndex == instance))
+            .OrderBy(edit => UnitScanner.GetAttributeLabel(edit.Attribute), StringComparer.Ordinal)
+            .Select(edit => (edit.Attribute, edit.Value))
             .ToList();
     }
 
     private List<string> BuildUnitWriteArgs(string attribute, int value, bool preview)
     {
-        var args = new List<string> { "--unit", _selectedUnitType, "--attribute", attribute, "--value", value.ToString(CultureInfo.InvariantCulture) };
-        if (_unitSingleRadio?.Checked == true)
+        return BuildUnitWriteArgs(
+            new PendingUnitEdit(
+                _selectedUnitType,
+                attribute,
+                value,
+                _unitSingleRadio?.Checked == true,
+                (int)(_unitInstance?.Value ?? 0)),
+            preview);
+    }
+
+    private static List<string> BuildUnitWriteArgs(PendingUnitEdit edit, bool preview)
+    {
+        var args = new List<string>
+        {
+            "--unit", edit.UnitType,
+            "--attribute", edit.Attribute,
+            "--value", edit.Value.ToString(CultureInfo.InvariantCulture)
+        };
+        if (edit.SingleInstance)
         {
             args.Add("--unit-instance");
-            args.Add(((int)(_unitInstance?.Value ?? 0)).ToString());
+            args.Add(edit.InstanceIndex.ToString(CultureInfo.InvariantCulture));
         }
         if (preview) args.Add("--dry-run");
         else args.Add("--yes");
@@ -983,20 +1023,6 @@ internal sealed class HeroEditorForm : Form
             ? "全部资源、所有规模"
             : $"{ResourceScanner.GetCategoryLabel(category)} · {_selectedResourceSizeLabel}";
         SetDirtySummary($"{scope} · 全部资源点 → {amount.ToString("N0", CultureInfo.InvariantCulture)}");
-    }
-
-    private async Task ApplyResourceAsync()
-    {
-        if (!EnsureSlot() || !EnsureResourceSelection() || !TryGetResourceAmount(out var amount)) return;
-        var allResources = _resourceAll?.Checked == true;
-        var category = allResources ? "*" : _selectedResourceCategory;
-        var configId = allResources ? null : _selectedResourceConfigId;
-        var scope = allResources
-            ? "全部已识别资源（所有类别、所有规模）"
-            : $"{ResourceScanner.GetCategoryLabel(category)} · {_selectedResourceSizeLabel}（全部资源点）";
-        var mode = $"统一设为 {amount:N0}";
-        if (MessageBox.Show($"资源：{scope}\r\n模式：{mode}\r\n说明：这是一次性存档修改，采集后仍可能减少，不是永久锁定。\r\n\r\n保存前会自动备份整个槽位。{LiveWriteWarning()}\r\n继续吗？", "保存资源修改", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
-        await RunWriteAsync("资源修改", BuildResourceArgs(category, configId, amount, false).Append("--yes").ToArray());
     }
 
     private List<string> BuildResourceArgs(string category, int? configId, int amount, bool preview)
@@ -1047,38 +1073,107 @@ internal sealed class HeroEditorForm : Form
         SetDirtySummary($"{GetEditorLabel(attr)} → {FormatDisplayValue(attr, value)}");
     }
 
-    private async Task ApplyPlayerAsync()
-    {
-        if (!EnsureSlot()) return;
-        var attr = SelectedPlayerAttribute();
-        var value = ToStorageValue(attr, _playerValue?.Value ?? 0);
-        if (MessageBox.Show($"玩家属性：{GetEditorLabel(attr)}\r\n目标值：{FormatDisplayValue(attr, value)}\r\n\r\n保存前会自动备份整个槽位。{LiveWriteWarning()}\r\n继续吗？", "保存玩家修改", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
-        await RunWriteAsync("玩家属性", "--player-attribute", attr, "--player-value", value.ToString(CultureInfo.InvariantCulture), "--yes");
-    }
-
     private async Task PreviewAdvancedEntryAsync(string key)
     {
         if (!EnsureSlot() || !_advancedOperations.TryGetValue(key, out var operation) || !_advancedInputs.TryGetValue(key, out var input)) return;
-        _advancedMode = key;
         var rawValue = ToStorageValue(operation.Attribute, input.Value);
         var args = BuildAdvancedArgs(operation, input.Value, true);
         await RunReadOnlyAsync(args.ToArray());
         SetDirtySummary($"{GetAdvancedLabel(key)} → {FormatDisplayValue(operation.Attribute, rawValue)}");
     }
 
-    private async Task ApplyAdvancedEntryAsync(string key)
+    private async Task SaveAllPendingAsync()
     {
-        if (!EnsureSlot() || !_advancedOperations.TryGetValue(key, out var operation) || !_advancedInputs.TryGetValue(key, out var input)) return;
-        _advancedMode = key;
-        var rawValue = ToStorageValue(operation.Attribute, input.Value);
-        if (MessageBox.Show($"修改：{GetAdvancedLabel(key)}\r\n目标值：{FormatDisplayValue(operation.Attribute, rawValue)}\r\n\r\n保存前会自动备份整个槽位。{LiveWriteWarning()}\r\n继续吗？", "保存高级修改", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
-        await RunWriteAsync("高级功能", BuildAdvancedArgs(operation, input.Value, false).ToArray());
+        if (!EnsureSlot()) return;
+        var operations = BuildPendingWriteArgs();
+        if (operations.Count == 0)
+        {
+            MessageBox.Show("请先修改数值。修改会先暂存在这里，点击顶部“保存修改”后才写入存档。", "没有待保存修改", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var summary = BuildPendingSummary();
+        var warning = LiveWriteWarning();
+        var message = $"本次将写入 {operations.Count:N0} 项修改：\r\n{summary}\r\n\r\n请先备份存档，避免损坏。{warning}\r\n确定保存吗？";
+        if (MessageBox.Show(message, "保存修改", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+
+        if (!await RunWriteBatchAsync(operations)) return;
+        ClearPendingEdits();
+        _dirty = false;
+        await ReloadCurrentTabAsync();
+        _statusLabel.Text = "修改已保存，回读校验通过";
     }
 
-    private async Task ApplyAdvancedAsync()
+    private List<IReadOnlyList<string>> BuildPendingWriteArgs()
     {
-        var key = _advancedOperations.ContainsKey(_advancedMode) ? _advancedMode : _advancedOperations.Keys.FirstOrDefault() ?? string.Empty;
-        if (!string.IsNullOrWhiteSpace(key)) await ApplyAdvancedEntryAsync(key);
+        var operations = new List<IReadOnlyList<string>>();
+        foreach (var edit in _pendingUnitEdits.Values
+                     .OrderBy(edit => edit.UnitType, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(edit => edit.Attribute, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(edit => edit.SingleInstance)
+                     .ThenBy(edit => edit.InstanceIndex))
+        {
+            operations.Add(BuildUnitWriteArgs(edit, false));
+        }
+
+        if (_pendingAllResources)
+        {
+            operations.Add(BuildResourceArgs("*", null, 99_999, false).Append("--yes").ToArray());
+        }
+        else
+        {
+            foreach (var edit in _pendingResourceEdits.Values
+                         .OrderBy(edit => edit.Category, StringComparer.OrdinalIgnoreCase)
+                         .ThenBy(edit => edit.ConfigId))
+            {
+                operations.Add(BuildResourceArgs(edit.Category, edit.ConfigId, edit.Amount, false).Append("--yes").ToArray());
+            }
+        }
+
+        foreach (var edit in _pendingPlayerEdits.Values.OrderBy(edit => edit.Attribute, StringComparer.OrdinalIgnoreCase))
+        {
+            operations.Add(new[]
+            {
+                "--player-attribute", edit.Attribute,
+                "--player-value", edit.Value.ToString(CultureInfo.InvariantCulture),
+                "--yes"
+            });
+        }
+
+        foreach (var edit in _pendingAdvancedEdits.Values.OrderBy(edit => edit.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            operations.Add(BuildAdvancedArgs(
+                (edit.Kind, edit.Attribute, edit.Unit),
+                edit.Value,
+                false));
+        }
+
+        return operations;
+    }
+
+    private string BuildPendingSummary()
+    {
+        var parts = new List<string>();
+        if (_pendingUnitEdits.Count > 0) parts.Add($"单位属性 {_pendingUnitEdits.Count:N0} 项");
+        if (_pendingAllResources) parts.Add("全部资源统一为 99,999");
+        else if (_pendingResourceEdits.Count > 0) parts.Add($"资源 {_pendingResourceEdits.Count:N0} 项");
+        if (_pendingPlayerEdits.Count > 0) parts.Add($"玩家属性 {_pendingPlayerEdits.Count:N0} 项");
+        if (_pendingAdvancedEdits.Count > 0) parts.Add($"高级功能 {_pendingAdvancedEdits.Count:N0} 项");
+        return parts.Count == 0 ? "无" : string.Join("、", parts);
+    }
+
+    private void ClearPendingEdits()
+    {
+        _pendingUnitEdits.Clear();
+        _pendingResourceEdits.Clear();
+        _pendingPlayerEdits.Clear();
+        _pendingAdvancedEdits.Clear();
+        _pendingAllResources = false;
+        _unitChangedAttributes.Clear();
+        var previousLoading = _loadingResourceInputs;
+        _loadingResourceInputs = true;
+        if (_resourceAll is not null) _resourceAll.Checked = false;
+        _loadingResourceInputs = previousLoading;
     }
 
     private static List<string> BuildAdvancedArgs((string Kind, string Attribute, string Unit) operation, decimal value, bool preview)
@@ -1118,38 +1213,20 @@ internal sealed class HeroEditorForm : Form
         await RunCliAndLogAsync(operationArgs, false);
     }
 
-    private async Task RunWriteAsync(string label, params string[] operationArgs)
+    private async Task<bool> RunWriteBatchAsync(IReadOnlyList<IReadOnlyList<string>> operations)
     {
-        if (!EnsureSlot()) return;
-        var result = await RunCliAndLogAsync(operationArgs, true);
-        if (result.ExitCode != 0)
-        {
-            // 失败时保留“待保存”状态，避免界面误报已经写入。
-            UpdateGlobalStatus();
-            return;
-        }
-
-        _dirty = false;
-        await ReloadCurrentTabAsync();
-        _statusLabel.Text = $"{label}已保存，回读校验通过";
-    }
-
-    private async Task RunWriteBatchAsync(string label, IReadOnlyList<IReadOnlyList<string>> operations)
-    {
-        if (!EnsureSlot() || operations.Count == 0) return;
+        if (!EnsureSlot() || operations.Count == 0) return false;
         foreach (var operation in operations)
         {
             var result = await RunCliAndLogAsync(operation, true);
             if (result.ExitCode != 0)
             {
                 UpdateGlobalStatus();
-                return;
+                return false;
             }
         }
 
-        _dirty = false;
-        await ReloadCurrentTabAsync();
-        _statusLabel.Text = $"{label}已保存，回读校验通过";
+        return true;
     }
 
     private async Task<CliRunResult> RunCliAndLogAsync(IEnumerable<string> operationArgs, bool write)
@@ -1264,7 +1341,7 @@ internal sealed class HeroEditorForm : Form
         if (_dirty)
         {
             var answer = MessageBox.Show(
-                "当前有尚未保存的编辑器设置或预览修改，退出后这些设置会丢失。确定退出吗？",
+                "当前有尚未写入存档的修改，退出后这些修改会丢失。确定退出吗？",
                 "有待保存修改",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning);
@@ -1328,6 +1405,7 @@ internal sealed class HeroEditorForm : Form
     {
         if (_refreshingSlots) return;
         _slotPath = (_slotPicker.SelectedItem as HeroSlotChoice)?.Path;
+        ClearPendingEdits();
         _dirty = false;
         UpdateGlobalStatus();
         _ = LoadPageAsync(_tabs.SelectedTab?.Name ?? "units");
@@ -1343,21 +1421,173 @@ internal sealed class HeroEditorForm : Form
         _fileStatusLabel.ForeColor = files == 4 ? Green : files >= 2 ? Warning : TextMuted;
         _gameStatusLabel.Text = running ? "游戏运行中 · 可写" : "游戏未运行";
         _gameStatusLabel.ForeColor = running ? Red : Green;
-        _saveButton.Enabled = !_busy && _slotPath is not null;
-        _statusLabel.Text = _busy ? "正在处理…" : _dirty ? "有待保存的修改" : running ? "游戏运行中，可直接保存" : "就绪";
+        _saveButton.Enabled = !_busy && _slotPath is not null && HasPendingEdits();
+        _statusLabel.Text = _busy ? "正在处理…" : HasPendingEdits() ? "有待保存的修改" : running ? "游戏运行中，可直接保存" : "就绪";
     }
 
     private void SetDirtySummary(string text)
     {
-        _dirty = true;
-        _statusLabel.Text = "待保存：" + text;
+        _dirty = HasPendingEdits();
+        _statusLabel.Text = _dirty ? "待保存：" + text : "预览：" + text;
         AppendLog("待保存修改：" + text);
     }
 
     private void MarkDirty()
     {
-        if (!_suppressSelection) _dirty = true;
+        if (!_suppressSelection) _dirty = HasPendingEdits();
         UpdateGlobalStatus();
+    }
+
+    private void StageUnitInput(string attribute, NumericUpDown input)
+    {
+        var single = _unitSingleRadio?.Checked == true;
+        var instance = (int)(_unitInstance?.Value ?? 0);
+        var value = ToStorageValue(attribute, input.Value);
+        var key = GetUnitEditKey(_selectedUnitType, attribute, single, instance);
+        if (_unitInitialValues.TryGetValue(attribute, out var initial) && value == initial)
+        {
+            _pendingUnitEdits.Remove(key);
+            _unitChangedAttributes.Remove(attribute);
+        }
+        else
+        {
+            _pendingUnitEdits[key] = new PendingUnitEdit(_selectedUnitType, attribute, value, single, instance);
+            _unitChangedAttributes.Add(attribute);
+            RemoveConflictingAdvancedUnitEdits(_selectedUnitType, attribute);
+        }
+
+        MarkDirty();
+    }
+
+    private void StageResourceInput()
+    {
+        if (_resourceAll?.Checked == true) return;
+        var key = GetResourceEditKey(_selectedResourceCategory, _selectedResourceConfigId);
+        var text = _resourceAmountText?.Text.Trim() ?? string.Empty;
+        if (int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var amount)
+            && amount >= 1
+            && amount <= 1_000_000_000)
+        {
+            if (_resourceInitialAmounts.TryGetValue(key, out var initial) && initial.HasValue && initial.Value == amount)
+            {
+                _pendingResourceEdits.Remove(key);
+            }
+            else
+            {
+                _pendingResourceEdits[key] = new PendingResourceEdit(_selectedResourceCategory, _selectedResourceConfigId, amount);
+            }
+        }
+        else
+        {
+            _pendingResourceEdits.Remove(key);
+        }
+
+        MarkDirty();
+    }
+
+    private void StagePlayerInput()
+    {
+        var attribute = SelectedPlayerAttribute();
+        var value = ToStorageValue(attribute, _playerValue?.Value ?? 0);
+        var initial = _playerStates.TryGetValue(attribute, out var state) ? ParseFirstInteger(state) : null;
+        if (initial.HasValue && initial.Value == value)
+        {
+            _pendingPlayerEdits.Remove(attribute);
+        }
+        else
+        {
+            _pendingPlayerEdits[attribute] = new PendingPlayerEdit(attribute, value);
+            RemoveConflictingAdvancedPlayerEdit(attribute);
+        }
+
+        MarkDirty();
+    }
+
+    private void StageAdvancedInput(string key, NumericUpDown input)
+    {
+        if (!_advancedOperations.TryGetValue(key, out var operation)) return;
+        var value = ToStorageValue(operation.Attribute, input.Value);
+        if (_advancedInitialValues.TryGetValue(key, out var initial) && value == initial)
+        {
+            _pendingAdvancedEdits.Remove(key);
+        }
+        else
+        {
+            _pendingAdvancedEdits[key] = new PendingAdvancedEdit(key, operation.Kind, operation.Attribute, operation.Unit, value);
+            if (operation.Kind.Equals("unit", StringComparison.OrdinalIgnoreCase))
+            {
+                RemoveConflictingUnitEdits(operation.Unit, operation.Attribute);
+            }
+            else
+            {
+                _pendingPlayerEdits.Remove(operation.Attribute);
+            }
+        }
+
+        MarkDirty();
+    }
+
+    private bool TryGetPendingUnitEdit(string unitType, string attribute, out PendingUnitEdit edit)
+    {
+        var single = _unitSingleRadio?.Checked == true;
+        var instance = (int)(_unitInstance?.Value ?? 0);
+        return _pendingUnitEdits.TryGetValue(GetUnitEditKey(unitType, attribute, single, instance), out edit!);
+    }
+
+    private static string GetUnitEditKey(string unitType, string attribute, bool single, int instance)
+    {
+        return $"{unitType}\u001F{attribute}\u001F{(single ? instance.ToString(CultureInfo.InvariantCulture) : "all")}";
+    }
+
+    private static string GetResourceEditKey(string category, int? configId)
+    {
+        return $"{category}\u001F{(configId?.ToString(CultureInfo.InvariantCulture) ?? "all")}";
+    }
+
+    private void RemoveConflictingAdvancedUnitEdits(string unitType, string attribute)
+    {
+        foreach (var key in _pendingAdvancedEdits.Values
+                     .Where(edit => edit.Kind.Equals("unit", StringComparison.OrdinalIgnoreCase)
+                         && edit.Unit.Equals(unitType, StringComparison.OrdinalIgnoreCase)
+                         && edit.Attribute.Equals(attribute, StringComparison.OrdinalIgnoreCase))
+                     .Select(edit => edit.Key)
+                     .ToList())
+        {
+            _pendingAdvancedEdits.Remove(key);
+        }
+    }
+
+    private void RemoveConflictingUnitEdits(string unitType, string attribute)
+    {
+        foreach (var key in _pendingUnitEdits.Values
+                     .Where(edit => edit.UnitType.Equals(unitType, StringComparison.OrdinalIgnoreCase)
+                         && edit.Attribute.Equals(attribute, StringComparison.OrdinalIgnoreCase))
+                     .Select(edit => GetUnitEditKey(edit.UnitType, edit.Attribute, edit.SingleInstance, edit.InstanceIndex))
+                     .ToList())
+        {
+            _pendingUnitEdits.Remove(key);
+        }
+    }
+
+    private void RemoveConflictingAdvancedPlayerEdit(string attribute)
+    {
+        foreach (var key in _pendingAdvancedEdits.Values
+                     .Where(edit => !edit.Kind.Equals("unit", StringComparison.OrdinalIgnoreCase)
+                         && edit.Attribute.Equals(attribute, StringComparison.OrdinalIgnoreCase))
+                     .Select(edit => edit.Key)
+                     .ToList())
+        {
+            _pendingAdvancedEdits.Remove(key);
+        }
+    }
+
+    private bool HasPendingEdits()
+    {
+        return _pendingUnitEdits.Count > 0
+            || _pendingResourceEdits.Count > 0
+            || _pendingPlayerEdits.Count > 0
+            || _pendingAdvancedEdits.Count > 0
+            || _pendingAllResources;
     }
 
     private void UpdateUnitSummary()
@@ -1423,9 +1653,13 @@ internal sealed class HeroEditorForm : Form
 
         if (_resourceAmountText is null) return;
         _loadingResourceInputs = true;
+        var editKey = GetResourceEditKey(item.Category, item.ConfigId);
         _resourceAmountText.Text = _resourceAll?.Checked == true
             ? "99999"
+            : _pendingResourceEdits.TryGetValue(editKey, out var pending)
+                ? pending.Amount.ToString(CultureInfo.InvariantCulture)
             : item.CurrentAmount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+        _resourceInitialAmounts[editKey] = item.CurrentAmount;
         _loadingResourceInputs = false;
     }
 
@@ -1486,9 +1720,11 @@ internal sealed class HeroEditorForm : Form
         _selectedPlayerAttribute = PlayerScanner.NormalizeAttribute(attribute);
         if (_playerSelectedLabel is not null) _playerSelectedLabel.Text = GetEditorLabel(_selectedPlayerAttribute);
         if (_playerValue is null) return;
-        var rawValue = _playerStates.TryGetValue(_selectedPlayerAttribute, out var state)
-            ? ParseFirstInteger(state)
-            : null;
+        var rawValue = _pendingPlayerEdits.TryGetValue(_selectedPlayerAttribute, out var pending)
+            ? pending.Value
+            : _playerStates.TryGetValue(_selectedPlayerAttribute, out var state)
+                ? ParseFirstInteger(state)
+                : null;
         _suppressSelection = true;
         SetInputFromStorage(_playerValue, _selectedPlayerAttribute, rawValue ?? DefaultPlayerAttributeValue(_selectedPlayerAttribute));
         _suppressSelection = false;
@@ -1724,16 +1960,7 @@ internal sealed class HeroEditorForm : Form
             input.ValueChanged += (_, _) =>
             {
                 if (_loadingUnitInputs) return;
-                var current = ToStorageValue(attribute, input.Value);
-                if (_unitInitialValues.TryGetValue(attribute, out var initial) && current == initial)
-                {
-                    _unitChangedAttributes.Remove(attribute);
-                }
-                else
-                {
-                    _unitChangedAttributes.Add(attribute);
-                }
-                MarkDirty();
+                StageUnitInput(attribute, input);
             };
             inputs[attribute] = input;
             var row = table.RowCount++;
@@ -1757,15 +1984,14 @@ internal sealed class HeroEditorForm : Form
         {
             Dock = DockStyle.Top,
             Height = 46,
-            Width = 940,
-            ColumnCount = 4,
+            Width = 650,
+            ColumnCount = 3,
             RowCount = 1,
             BackColor = Color.Transparent,
             Margin = new Padding(0, 0, 0, 2)
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 230));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
         var title = new Label
         {
@@ -1783,15 +2009,12 @@ internal sealed class HeroEditorForm : Form
         input.Margin = new Padding(0, 4, 0, 4);
         input.ValueChanged += (_, _) =>
         {
-            _advancedMode = key;
-            if (!_loadingAdvancedInputs) MarkDirty();
+            if (!_loadingAdvancedInputs) StageAdvancedInput(key, input);
         };
         var preview = SmallButton("预览", async (_, _) => await PreviewAdvancedEntryAsync(key));
-        var save = PrimaryButton("保存", async (_, _) => await ApplyAdvancedEntryAsync(key));
         row.Controls.Add(title, 0, 0);
         row.Controls.Add(input, 1, 0);
         row.Controls.Add(preview, 2, 0);
-        row.Controls.Add(save, 3, 0);
         table.Controls.Add(row);
         _advancedInputs[key] = input;
         _advancedOperations[key] = (kind, attribute, unit);

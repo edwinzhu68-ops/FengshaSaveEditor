@@ -612,23 +612,18 @@ internal static class Program
 
         if (dryRun)
         {
-            Console.WriteLine("预览模式：没有创建备份，也没有修改存档。");
+            Console.WriteLine("预览模式：没有修改存档。");
             return 0;
         }
 
-        if (!confirmed && !Confirm("确认备份并修改这些资源点？"))
+        if (!confirmed && !Confirm("确认修改这些资源点？"))
         {
             Console.WriteLine("已取消，没有写入。");
             return 0;
         }
 
         WarnIfGameRunning();
-        var backup = BackupManager.Create(slot, $"修改资源 {normalizedCategory} 为 {targetAmount}");
-        Console.WriteLine($"已完成整槽备份：{backup.Directory}");
-        if (backup.Pruned.Count > 0)
-        {
-            Console.WriteLine($"已清理旧备份 {backup.Pruned.Count} 份（保留最近 {BackupManager.MaxRetainedBackups} 份，总量上限 {BackupManager.MaxBackupTotalBytes / (1024L * 1024 * 1024)} GB）。");
-        }
+        Console.WriteLine("提示：工具不会自动备份，请在保存前自行备份整个存档槽。");
 
         var patchedRaw = (byte[])analysis.Document.Raw.Clone();
         foreach (var node in selected)
@@ -641,7 +636,6 @@ internal static class Program
 
         var levelPath = Path.Combine(slot, "Level.sav");
         var tempPath = levelPath + $".fengsha-new-{Guid.NewGuid():N}.tmp";
-        var replaced = false;
         try
         {
             var candidate = analysis.Container.Recompress(patchedRaw, oodle);
@@ -652,14 +646,11 @@ internal static class Program
 
             WarnIfGameRunning();
             File.Move(tempPath, levelPath, overwrite: true);
-            replaced = true;
-
             var finalAnalysis = AnalyzeLevelFile(levelPath, oodle);
             ValidateResourceCandidate(analysis, finalAnalysis, patchedRaw, selected, targetAmount);
             Console.WriteLine();
             PrintResourceAnalysis(finalAnalysis, "写回后回读");
             Console.WriteLine("资源修改成功：匹配的全部资源点已写回，并通过完整解压回读。");
-            Console.WriteLine($"恢复目录：{backup.Directory}");
             if (lockMode)
             {
                 Console.WriteLine("说明：这是把容量和当前数量写成固定大值；采集后游戏仍可能扣减。下次保存后再次运行即可重新补满。");
@@ -672,12 +663,6 @@ internal static class Program
             if (File.Exists(tempPath))
             {
                 File.Delete(tempPath);
-            }
-
-            if (replaced && !IsGameRunning() && File.Exists(Path.Combine(backup.Directory, "Level.sav")))
-            {
-                File.Copy(Path.Combine(backup.Directory, "Level.sav"), levelPath, overwrite: true);
-                Console.Error.WriteLine("写回后校验失败，已用本次备份恢复 Level.sav。");
             }
 
             throw;
@@ -741,23 +726,18 @@ internal static class Program
         Console.WriteLine($"目标：将匹配的全部 {entries.Count} 个字段设为 {targetValue}，不是只改一个单位。");
         if (dryRun)
         {
-            Console.WriteLine("预览模式：没有创建备份，也没有修改存档。");
+            Console.WriteLine("预览模式：没有修改存档。");
             return 0;
         }
 
-        if (!confirmed && !Confirm("确认备份并修改这些单位属性？"))
+        if (!confirmed && !Confirm("确认修改这些单位属性？"))
         {
             Console.WriteLine("已取消，没有写入。");
             return 0;
         }
 
         WarnIfGameRunning();
-        var backup = BackupManager.Create(slot, $"修改单位 {normalizedUnit} 的 {normalizedAttribute} 为 {targetValue}");
-        Console.WriteLine($"已完成整槽备份：{backup.Directory}");
-        if (backup.Pruned.Count > 0)
-        {
-            Console.WriteLine($"已清理旧备份 {backup.Pruned.Count} 份（保留最近 {BackupManager.MaxRetainedBackups} 份，总量上限 {BackupManager.MaxBackupTotalBytes / (1024L * 1024 * 1024)} GB）。");
-        }
+        Console.WriteLine("提示：工具不会自动备份，请在保存前自行备份整个存档槽。");
 
         var patchedRaw = (byte[])analysis.Document.Raw.Clone();
         foreach (var entry in entries)
@@ -769,7 +749,6 @@ internal static class Program
 
         var massPath = Path.Combine(slot, "Mass.sav");
         var tempPath = massPath + $".fengsha-new-{Guid.NewGuid():N}.tmp";
-        var replaced = false;
         try
         {
             var candidate = analysis.Container.Recompress(patchedRaw, oodle);
@@ -788,8 +767,6 @@ internal static class Program
 
             WarnIfGameRunning();
             File.Move(tempPath, massPath, overwrite: true);
-            replaced = true;
-
             var finalAnalysis = AnalyzeUnitFile(massPath, oodle);
             ValidateUnitCandidate(
                 analysis,
@@ -813,7 +790,6 @@ internal static class Program
             Console.WriteLine($"VSOM CRC32：0x{finalAnalysis.Container.ActualPayloadCrc:X8}（有效）");
             Console.WriteLine($"回读分布：{FormatDistribution(finalEntries.Select(entry => entry.CurrentValue))}");
             Console.WriteLine("单位属性修改成功：匹配的全部字段已写回，并通过完整解压回读。");
-            Console.WriteLine($"恢复目录：{backup.Directory}");
             return 0;
         }
         catch
@@ -821,12 +797,6 @@ internal static class Program
             if (File.Exists(tempPath))
             {
                 File.Delete(tempPath);
-            }
-
-            if (replaced && !IsGameRunning() && File.Exists(Path.Combine(backup.Directory, "Mass.sav")))
-            {
-                File.Copy(Path.Combine(backup.Directory, "Mass.sav"), massPath, overwrite: true);
-                Console.Error.WriteLine("写回后校验失败，已用本次备份恢复 Mass.sav。");
             }
 
             throw;
@@ -867,23 +837,18 @@ internal static class Program
         Console.WriteLine($"目标：将匹配的全部 {entries.Count} 个字段设为 {targetValue}。");
         if (dryRun)
         {
-            Console.WriteLine("预览模式：没有创建备份，也没有修改存档。");
+            Console.WriteLine("预览模式：没有修改存档。");
             return 0;
         }
 
-        if (!confirmed && !Confirm("确认备份并修改这个玩家属性？"))
+        if (!confirmed && !Confirm("确认修改这个玩家属性？"))
         {
             Console.WriteLine("已取消，没有写入。");
             return 0;
         }
 
         WarnIfGameRunning();
-        var backup = BackupManager.Create(slot, $"修改玩家属性 {normalizedAttribute} 为 {targetValue}");
-        Console.WriteLine($"已完成整槽备份：{backup.Directory}");
-        if (backup.Pruned.Count > 0)
-        {
-            Console.WriteLine($"已清理旧备份 {backup.Pruned.Count} 份（保留最近 {BackupManager.MaxRetainedBackups} 份，总量上限 {BackupManager.MaxBackupTotalBytes / (1024L * 1024 * 1024)} GB）。");
-        }
+        Console.WriteLine("提示：工具不会自动备份，请在保存前自行备份整个存档槽。");
 
         var patchedRaw = (byte[])analysis.Document.Raw.Clone();
         foreach (var entry in entries)
@@ -895,7 +860,6 @@ internal static class Program
 
         var playerPath = Path.Combine(slot, "Player.sav");
         var tempPath = playerPath + $".fengsha-new-{Guid.NewGuid():N}.tmp";
-        var replaced = false;
         try
         {
             var candidate = analysis.Container.Recompress(patchedRaw, oodle);
@@ -906,8 +870,6 @@ internal static class Program
 
             WarnIfGameRunning();
             File.Move(tempPath, playerPath, overwrite: true);
-            replaced = true;
-
             var finalAnalysis = AnalyzePlayerFile(playerPath, oodle);
             ValidatePlayerCandidate(analysis, finalAnalysis, patchedRaw, entries, normalizedAttribute, targetValue);
             var finalEntries = PlayerScanner.FindAttributeEntries(finalAnalysis.Scan, normalizedAttribute);
@@ -918,7 +880,6 @@ internal static class Program
             Console.WriteLine($"VSOM CRC32：0x{finalAnalysis.Container.ActualPayloadCrc:X8}（有效）");
             Console.WriteLine($"回读分布：{FormatDistribution(finalEntries.Select(entry => entry.CurrentValue))}");
             Console.WriteLine("玩家属性修改成功：匹配的全部字段已写回，并通过完整解压回读。");
-            Console.WriteLine($"恢复目录：{backup.Directory}");
             return 0;
         }
         catch
@@ -926,12 +887,6 @@ internal static class Program
             if (File.Exists(tempPath))
             {
                 File.Delete(tempPath);
-            }
-
-            if (replaced && !IsGameRunning() && File.Exists(Path.Combine(backup.Directory, "Player.sav")))
-            {
-                File.Copy(Path.Combine(backup.Directory, "Player.sav"), playerPath, overwrite: true);
-                Console.Error.WriteLine("写回后校验失败，已用本次备份恢复 Player.sav。");
             }
 
             throw;
@@ -1653,7 +1608,7 @@ internal static class Program
         Console.WriteLine("  --player-attribute A --player-value N  修改 Player.sav 中匹配的玩家全局属性；搬运容量可用 AT_CartCapacity。");
         Console.WriteLine("  --save-root P   指定 SaveGames 目录；默认使用 %LOCALAPPDATA%\\MOProject\\Saved\\SaveGames。");
         Console.WriteLine("  --oodle P       指定 oo2core_9_win64.dll；默认先找 EXE 同目录，再找已验证 DLL 路径。");
-        Console.WriteLine("  --yes            跳过确认提示；修改仍会自动整槽备份并在写回后回读校验。");
+        Console.WriteLine("  --yes            跳过确认提示；修改仍会在写回后完整回读校验，但不会自动备份。");
         Console.WriteLine("  --dry-run        只扫描和预览，不写文件。");
         Console.WriteLine("  --list-resources 只读列出当前 Level.sav 中所有安全识别的资源点、档位和数量。");
         Console.WriteLine("  --list-units     只读列出当前 Mass.sav 中实际发现的单位类型、数量和已知但未出现的模板。");
