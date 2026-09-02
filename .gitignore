@@ -9,7 +9,7 @@ obj/
 # The game-provided Oodle runtime is not part of this source project.
 oo2core_*.dll
 
-# Personal donation images are included only in the author's release package.
+# Author-only release images are not part of the public source tree.
 Assets/donation-alipay.jpg
 Assets/donation-wechat.png
 Assets/donation-alipay.png
