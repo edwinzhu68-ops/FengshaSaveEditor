@@ -1,0 +1,24 @@
+# .NET build output
+bin/
+obj/
+
+# Game/save data: never commit real player files
+*.sav
+*.bak
+
+# The game-provided Oodle runtime is not part of this source project.
+oo2core_*.dll
+
+# Personal donation images are included only in the author's release package.
+Assets/donation-alipay.jpg
+Assets/donation-wechat.png
+Assets/donation-alipay.png
+Assets/donation-wechat.jpg
+
+# The game-derived icon is kept in the local release build, not in the public source tree.
+Assets/fengsha-game.ico
+
+# Internal review notes and local-only material
+CODE_REVIEW.md
+*.user
+*.suo
