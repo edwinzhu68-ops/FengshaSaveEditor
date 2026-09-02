@@ -32,6 +32,7 @@ internal sealed class AppOptions
     public bool ListUnits { get; set; }
     public bool ListPlayerAttributes { get; set; }
     public bool ResourceLock { get; set; }
+    public bool ResourceMax { get; set; }
     public bool ScanRoads { get; set; }
     public bool Json { get; set; }
     public bool Help { get; set; }
@@ -182,6 +183,9 @@ internal static class Program
                 case "--resource-lock":
                     options.ResourceLock = true;
                     break;
+                case "--resource-max":
+                    options.ResourceMax = true;
+                    break;
                 case "--unit":
                     options.UnitType = RequireValue(args, ref i, arg);
                     break;
@@ -325,9 +329,27 @@ internal static class Program
             throw new ArgumentException("--resource-lock 必须与 --resource 一起使用。");
         }
 
-        if (options.ResourceCategory is not null && !options.ResourceAmount.HasValue && !options.ResourceLock)
+        if (options.ResourceMax && options.ResourceCategory is null)
         {
-            throw new ArgumentException("资源修改需要 --resource-amount N，或使用 --resource-lock 写入大储量。");
+            throw new ArgumentException("--resource-max 必须与 --resource 一起使用。");
+        }
+
+        if (options.ResourceMax && options.ResourceAmount.HasValue)
+        {
+            throw new ArgumentException("--resource-max 不能与 --resource-amount 同时使用。");
+        }
+
+        if (options.ResourceMax && options.ResourceLock)
+        {
+            throw new ArgumentException("--resource-max 不能与 --resource-lock 同时使用。");
+        }
+
+        if (options.ResourceCategory is not null
+            && !options.ResourceAmount.HasValue
+            && !options.ResourceLock
+            && !options.ResourceMax)
+        {
+            throw new ArgumentException("资源修改需要 --resource-amount N、--resource-lock 或 --resource-max。");
         }
 
         var genericAttributeOptionCount = (options.UnitType is not null ? 1 : 0)
@@ -526,6 +548,7 @@ internal static class Program
                 options.ResourceConfig,
                 options.ResourceAmount,
                 options.ResourceLock,
+                options.ResourceMax,
                 options.OodlePath,
                 options.Yes,
                 options.DryRun);
@@ -571,13 +594,14 @@ internal static class Program
         int? configId,
         int? amount,
         bool lockMode,
+        bool maxMode,
         string? oodlePath,
         bool confirmed,
         bool dryRun)
     {
         EnsureLevelSlot(slot);
         var normalizedCategory = ResourceScanner.NormalizeCategory(category);
-        var targetAmount = amount ?? (lockMode ? DefaultLockedResourceAmount : 0);
+        var targetAmount = amount ?? (lockMode ? DefaultLockedResourceAmount : maxMode ? 1 : 0);
         if (targetAmount <= 0 || targetAmount > MaxResourceAmount)
         {
             throw new ArgumentException($"资源数量必须是 1 到 {MaxResourceAmount:N0} 之间的整数。");
@@ -603,11 +627,11 @@ internal static class Program
                 $"没有找到匹配的资源点：类别 {category}，ConfigID {(configId?.ToString() ?? "全部")}。当前可用类别：{string.Join("、", available)}。");
         }
 
-        var safeAllMode = normalizedCategory == "*";
+        var safeAllMode = normalizedCategory == "*" || maxMode;
         var targets = selected.ToDictionary(
             node => node.RegionStart,
             node => safeAllMode
-                ? new ResourcePatchTarget(node.CurrentCapacity, Math.Min(targetAmount, node.CurrentCapacity))
+                ? new ResourcePatchTarget(node.CurrentCapacity, node.CurrentCapacity)
                 : new ResourcePatchTarget(targetAmount, targetAmount));
         var unchanged = selected.All(node =>
         {
@@ -616,7 +640,7 @@ internal static class Program
         });
         var mode = lockMode ? "大储量/锁定模式" : "指定数量模式";
         var targetDescription = safeAllMode
-            ? $"保留每个资源点原有最大容量，当前数量补至 {targetAmount:N0}（不超过各自上限）"
+            ? "保留每个资源点原有最大容量，并把当前数量补满到各自上限"
             : $"容量和当前数量设为 {targetAmount:N0}";
         Console.WriteLine($"目标：将 {selected.Count} 个{ResourceScanner.GetCategoryLabel(normalizedCategory)}资源点{targetDescription}（{mode}）。");
         if (unchanged)
@@ -669,7 +693,7 @@ internal static class Program
             Console.WriteLine("资源修改成功：匹配的全部资源点已写回，并通过完整解压回读。");
             if (safeAllMode)
             {
-                Console.WriteLine("说明：全部资源模式会保留每种资源原有最大容量，仅把当前数量补到目标值；容量较小的资源点按自身上限处理，避免游戏加载异常。");
+                Console.WriteLine("说明：全部资源模式会保留每种资源原有最大容量，并把当前数量补满到各自上限，避免写入 99,999 这类不符合资源规则的数值。");
             }
             else if (lockMode)
             {
@@ -1599,7 +1623,7 @@ internal static class Program
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --dry-run --speed 2500");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --resource IronOre --resource-amount 9999999");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --resource 枣子林 --resource-lock --yes");
-        Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --resource all --resource-amount 99999 --yes");
+        Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --resource all --resource-max --yes");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --resource 铁矿 --resource-config 33536 --resource-amount 9999999");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --list-resources");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --unit 民夫 --attribute 攻击 --value 999 --yes");
@@ -1618,9 +1642,10 @@ internal static class Program
         Console.WriteLine("参数：");
         Console.WriteLine("  --speed N       把当前槽位全部已存在民夫速度设为 N，默认 2000；是绝对值，重复运行不会叠加。");
         Console.WriteLine("  --resource C    选择资源类别；支持 IronOre/铁矿、Jujube/枣子林、HuntingAnimal/狩猎区域，也支持 all/全部。");
-        Console.WriteLine("  --resource-amount N  把匹配资源点的容量和当前数量都设为 N。");
+        Console.WriteLine("  --resource-amount N  把匹配资源点的容量和当前数量都设为 N；全部资源模式建议使用 --resource-max。");
+        Console.WriteLine("  --resource-max       把匹配资源点当前数量补满到各自最大容量，不修改最大容量。");
         Console.WriteLine("  --resource-lock  使用 9999999 的大储量模式；这是存档补满，不是常驻内存锁定。");
-        Console.WriteLine("  图形界面可勾选“全部资源补至 99,999”，会保留每种资源自己的最大容量；采集后仍可能减少。");
+        Console.WriteLine("  图形界面可勾选“全部资源补满”，会保留每种资源自己的最大容量；采集后仍可能减少。");
         Console.WriteLine("  --resource-config N  只处理指定 ConfigID 的资源档位；不填则处理该类别全部档位。");
         Console.WriteLine("  --unit U         选择单位；支持民夫、兵种名称、自有兵种或 all/全部。");
         Console.WriteLine("                  自有兵种只筛选民夫、常规兵种和攻城器械，不包含野兽、建筑、城防设施。");

@@ -407,7 +407,7 @@ internal sealed class HeroEditorForm : Form
         _resourceAmountText.TextChanged += (_, _) => { if (!_loadingResourceInputs) StageResourceInput(); };
         var resourceTip = new ToolTip();
         _resourceAll = new CheckBox { Text = "全部资源统一为 99,999", AutoSize = true, ForeColor = TextPrimary, Checked = false };
-        resourceTip.SetToolTip(_resourceAll, "把所有资源点当前数量补到 99,999；每个资源点保留自己的最大容量，容量较小的资源按自身上限处理，避免游戏加载异常。");
+        resourceTip.SetToolTip(_resourceAll, "把所有资源点当前数量补满到各自最大容量，不修改资源最大容量，避免游戏加载异常。");
         _resourceAll.CheckedChanged += (_, _) =>
         {
             if (!_loadingResourceInputs) _pendingAllResources = _resourceAll.Checked;
@@ -417,7 +417,7 @@ internal sealed class HeroEditorForm : Form
                 if (_resourceAmountText is not null)
                 {
                     _loadingResourceInputs = true;
-                    _resourceAmountText.Text = "99999";
+                    _resourceAmountText.Text = "自动补满";
                     _loadingResourceInputs = false;
                     _resourceAmountText.Enabled = false;
                 }
@@ -432,7 +432,7 @@ internal sealed class HeroEditorForm : Form
         };
         right.Controls.Add(FormLine("目标数量", _resourceAmountText, ""));
         right.Controls.Add(FormLine("批量设置", _resourceAll, ""));
-        right.Controls.Add(SecondaryLabel("未勾选时，只修改左侧选中的资源和规模；勾选后补满全部资源，保留每种资源自己的最大容量。"));
+        right.Controls.Add(SecondaryLabel("未勾选时，只修改左侧选中的资源和规模；勾选后把全部资源补满到各自最大容量。"));
         var actions = ActionBar();
         actions.Controls.Add(SmallButton("读取资源", async (_, _) => await RunReadOnlyAsync("--list-resources")));
         actions.Controls.Add(SmallButton("预览", async (_, _) => await PreviewResourceAsync()));
@@ -1017,21 +1017,28 @@ internal sealed class HeroEditorForm : Form
         var allResources = _resourceAll?.Checked == true;
         var category = allResources ? "*" : _selectedResourceCategory;
         var configId = allResources ? null : _selectedResourceConfigId;
-        var args = BuildResourceArgs(category, configId, amount, true);
+        var args = BuildResourceArgs(category, configId, amount, true, allResources);
         await RunReadOnlyAsync(args.ToArray());
         var scope = allResources
             ? "全部资源、所有规模"
             : $"{ResourceScanner.GetCategoryLabel(category)} · {_selectedResourceSizeLabel}";
         SetDirtySummary(allResources
-            ? $"{scope} · 按各自上限补至 {amount.ToString("N0", CultureInfo.InvariantCulture)}"
+            ? $"{scope} · 补满到各自最大容量"
             : $"{scope} · 全部资源点 → {amount.ToString("N0", CultureInfo.InvariantCulture)}");
     }
 
-    private List<string> BuildResourceArgs(string category, int? configId, int amount, bool preview)
+    private List<string> BuildResourceArgs(string category, int? configId, int amount, bool preview, bool maxMode = false)
     {
         var args = new List<string> { "--resource", category };
-        args.Add("--resource-amount");
-        args.Add(amount.ToString(CultureInfo.InvariantCulture));
+        if (maxMode)
+        {
+            args.Add("--resource-max");
+        }
+        else
+        {
+            args.Add("--resource-amount");
+            args.Add(amount.ToString(CultureInfo.InvariantCulture));
+        }
         if (configId.HasValue) { args.Add("--resource-config"); args.Add(configId.Value.ToString()); }
         if (preview) args.Add("--dry-run");
         return args;
@@ -1041,7 +1048,7 @@ internal sealed class HeroEditorForm : Form
     {
         if (_resourceAll?.Checked == true) return true;
         if (_selectedResourceConfigId.HasValue) return true;
-            MessageBox.Show("请先读取资源并在左侧选择一种资源规模，或勾选“全部资源补至 99,999”。", "尚未选择资源规模", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show("请先读取资源并在左侧选择一种资源规模，或勾选“全部资源补满”。", "尚未选择资源规模", MessageBoxButtons.OK, MessageBoxIcon.Information);
         return false;
     }
 
@@ -1120,7 +1127,7 @@ internal sealed class HeroEditorForm : Form
 
         if (_pendingAllResources)
         {
-            operations.Add(BuildResourceArgs("*", null, 99_999, false).Append("--yes").ToArray());
+            operations.Add(BuildResourceArgs("*", null, 0, false, true).Append("--yes").ToArray());
         }
         else
         {
@@ -1157,7 +1164,7 @@ internal sealed class HeroEditorForm : Form
     {
         var parts = new List<string>();
         if (_pendingUnitEdits.Count > 0) parts.Add($"单位属性 {_pendingUnitEdits.Count:N0} 项");
-        if (_pendingAllResources) parts.Add("全部资源按各自上限补至 99,999");
+        if (_pendingAllResources) parts.Add("全部资源补满到各自最大容量");
         else if (_pendingResourceEdits.Count > 0) parts.Add($"资源 {_pendingResourceEdits.Count:N0} 项");
         if (_pendingPlayerEdits.Count > 0) parts.Add($"玩家属性 {_pendingPlayerEdits.Count:N0} 项");
         if (_pendingAdvancedEdits.Count > 0) parts.Add($"高级功能 {_pendingAdvancedEdits.Count:N0} 项");

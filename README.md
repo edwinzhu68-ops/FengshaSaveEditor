@@ -12,7 +12,7 @@ Windows x64 存档修改工具。打开一个《烽沙》存档槽后，可以�
 | 玩家属性 | 搬运容量、搬运效率、采集效率、制作效率、政策移速等已确认的玩家全局 `AT_` 属性 |
 | 资源 | 铁矿、银矿、铜矿、锡矿、石料、原玉、盐、草药、枣子林、黏土、木材/树林、木炭、狩猎区域、兽材 |
 | 资源规模 | 按资源类别和小型/中型/大型规模修改全部匹配资源点 |
-| 资源批量 | 一次把全部已识别资源点补至 99,999；保留每个资源自己的最大容量，较小资源按自身上限处理 |
+| 资源批量 | 一次把全部已识别资源点补满到各自最大容量，不修改资源最大容量 |
 | 备份恢复 | 支持列出、校验和恢复已有备份；工具不会自动备份 |
 | 文件校验 | 校验 VSOM CRC、Oodle 分块、GVAS 长度/魔数，并对写回文件完整解压回读 |
 
@@ -32,7 +32,7 @@ FengshaSaveEditor.exe --list
 FengshaSaveEditor.exe --slot 新存档_3 --speed 2000 --yes
 FengshaSaveEditor.exe --slot 新存档_3 --unit 民夫 --attribute 移速 --value 2000 --yes
 FengshaSaveEditor.exe --slot 新存档_3 --unit 民夫 --attribute 生命 --value 1000 --yes
-FengshaSaveEditor.exe --slot 新存档_3 --resource all --resource-amount 99999 --yes
+FengshaSaveEditor.exe --slot 新存档_3 --resource all --resource-max --yes
 FengshaSaveEditor.exe --slot 新存档_3 --resource 铁矿 --resource-amount 9999999 --yes
 FengshaSaveEditor.exe --slot 新存档_3 --player-attribute 搬运容量 --player-value 100 --yes
 ```
@@ -54,7 +54,7 @@ FengshaSaveEditor.exe --list-backups
 
 * 修改对象是当前存档中已经存在的区域；以后新生成的民夫不会自动继承旧修改。
 * “全部自有兵种”按已识别的单位类型筛选，不包含野兽、建筑和城防设施。
-* 全部资源补至 99,999 是一次性存档修改，保留每种资源的最大容量，采集后仍可能减少，不是常驻内存锁定。
+* 全部资源补满到各自最大容量是一次性存档修改，采集后仍可能减少，不是常驻内存锁定。
 * 道路速度、单位模板、BuffConfig 等配置层字段目前只读，不猜测写入。
 * 游戏运行中可以写入，但如果游戏同时保存，游戏保存可能覆盖工具刚写入的结果。
 
