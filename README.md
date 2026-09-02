@@ -67,7 +67,7 @@ dotnet build FengshaSaveEditor.csproj
 dotnet run --project FengshaSaveEditor.csproj -- --help
 ```
 
-读取和写入存档还需要用户自己游戏目录中的 `oo2core_9_win64.dll`。该游戏运行库不放进源码仓库，也不上传真实存档。发行目录中把 DLL 放在 EXE 同目录，或使用 `--oodle` 指定路径。
+GitHub 的 Windows x64 压缩包已经配好运行所需的 Oodle DLL，解压后可直接运行；源码仓库不包含该运行库，也不上传真实存档。自行从源码构建时，请准备《烽沙》运行所需的 `oo2core_9_win64.dll` 并放在 EXE 同目录，或使用 `--oodle` 指定路径。
 
 ## 许可证
 
