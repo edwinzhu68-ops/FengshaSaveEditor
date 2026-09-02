@@ -6,15 +6,6 @@ using System.Windows.Forms;
 
 namespace FengshaSaveEditor;
 
-internal sealed record HeroEditorResourceRow(
-    string Label,
-    string Category,
-    int? ConfigId,
-    string SizeLabel,
-    int NodeCount,
-    int Capacity,
-    int? CurrentAmount);
-
 internal sealed record HeroSlotChoice(
     string Name,
     string Path,
@@ -30,11 +21,6 @@ internal sealed record PendingUnitEdit(
     int Value,
     bool SingleInstance,
     int InstanceIndex);
-
-internal sealed record PendingResourceEdit(
-    string Category,
-    int? ConfigId,
-    decimal Multiplier);
 
 internal sealed record MultiplierChoice(decimal Value, string Label)
 {
@@ -82,6 +68,7 @@ internal sealed class HeroEditorForm : Form
     private TableLayoutPanel _shell = null!;
     private ToolStrip _toolbar = null!;
     private ToolStripButton _saveButton = null!;
+    private ToolStripLabel _multiplierLabel = null!;
     private ToolStripComboBox _multiplierPicker = null!;
     private ComboBox _slotPicker = null!;
     private Label _folderLabel = null!;
@@ -104,32 +91,16 @@ internal sealed class HeroEditorForm : Form
     private RadioButton? _unitSingleRadio;
     private Label? _unitCurrentLabel;
 
-    private DataGridView? _resourceGrid;
-    private TextBox? _resourceSearch;
-    private string _selectedResourceCategory = "IronOre";
-    private int? _selectedResourceConfigId;
-    private string _selectedResourceSizeLabel = "未分档";
-    private Label? _resourceSelectedLabel;
-    private Label? _resourceCurrentStateLabel;
-    private CheckBox? _resourceAll;
-    private readonly Dictionary<string, PendingResourceEdit> _pendingResourceEdits = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, int> _resourceInitialCapacities = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, int?> _resourceInitialAmounts = new(StringComparer.OrdinalIgnoreCase);
     private bool _pendingAllResources;
     private decimal _pendingAllResourceMultiplier = 1m;
-    private bool _loadingResourceInputs;
     private decimal _selectedMultiplier = 1m;
     private bool _loadingMultiplier;
 
-    private DataGridView? _buildingGrid;
-    private TextBox? _buildingSearch;
-    private string? _selectedBuildingKey;
-    private Label? _buildingSelectedLabel;
-    private Label? _buildingCurrentStateLabel;
-    private CheckBox? _buildingAll;
-    private BuildingStorageListResponse? _buildingScan;
     private bool _pendingBuildingStorage;
     private decimal _pendingBuildingMultiplier = 1m;
+    private NumericUpDown? _resourceBatchMultiplier;
+    private NumericUpDown? _buildingBatchMultiplier;
+    private bool _loadingBatchInputs;
 
     private DataGridView? _playerGrid;
     private TextBox? _playerSearch;
@@ -209,11 +180,12 @@ internal sealed class HeroEditorForm : Form
         toolbar.Items.Add(brand);
         toolbar.Items.Add(ToolButton("打开存档", (_, _) => BrowseFolder()));
         toolbar.Items.Add(ToolButton("重新读取", async (_, _) => await ReloadCurrentTabAsync()));
-        toolbar.Items.Add(new ToolStripLabel("修改倍数")
+        _multiplierLabel = new ToolStripLabel("修改倍数")
         {
             ForeColor = TextPrimary,
             Margin = new Padding(12, 0, 4, 0)
-        });
+        };
+        toolbar.Items.Add(_multiplierLabel);
         _multiplierPicker = new ToolStripComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
@@ -317,6 +289,7 @@ internal sealed class HeroEditorForm : Form
         tabs.SelectedIndexChanged += async (_, _) =>
         {
             var page = tabs.SelectedTab?.Name;
+            UpdateMultiplierToolbarVisibility(page);
             if (page is not null) await LoadPageAsync(page);
             UpdateGlobalStatus();
         };
@@ -326,6 +299,7 @@ internal sealed class HeroEditorForm : Form
         tabs.TabPages.Add(MakeTab("player", "玩家属性", BuildPlayerPage()));
         tabs.TabPages.Add(MakeTab("advanced", "高级功能", BuildAdvancedPage()));
         tabs.SelectedIndex = 0;
+        UpdateMultiplierToolbarVisibility(tabs.SelectedTab?.Name);
         return tabs;
     }
 
@@ -415,163 +389,46 @@ internal sealed class HeroEditorForm : Form
         return split;
     }
 
-    private Control BuildResourcesPage()
-    {
-        var split = NewEditorSplit();
-        var left = new Panel { Dock = DockStyle.Fill, BackColor = Surface, Padding = new Padding(10) };
-        left.Paint += DrawBorder;
-        _resourceSearch = SearchBox("搜索铁矿、枣子林、狩猎区域");
-        _resourceSearch.TextChanged += (_, _) => FilterGrid(_resourceGrid, _resourceSearch.Text);
-        _resourceGrid = CreateGrid(("资源", 260), ("规模", 150), ("资源点数量", 150));
-        _resourceGrid.Dock = DockStyle.Fill;
-        _resourceGrid.Margin = new Padding(0, 8, 0, 0);
-        left.Controls.Add(_resourceGrid);
-        left.Controls.Add(_resourceSearch);
-        split.Panel1.Controls.Add(left);
-
-        var right = EditorPanel();
-        right.Controls.Add(PageHeading("资源", ""));
-        _resourceSelectedLabel = ValueLabel("未选择资源");
-        right.Controls.Add(FormLine("当前资源", _resourceSelectedLabel, ""));
-        _resourceCurrentStateLabel = SecondaryLabel("当前数量：尚未读取");
-        _resourceCurrentStateLabel.Dock = DockStyle.Top;
-        _resourceCurrentStateLabel.Height = 42;
-        right.Controls.Add(_resourceCurrentStateLabel);
-        right.Controls.Add(InlineSecondaryLabel("在窗口顶部选择修改倍数：1 倍=当前存档上限，2 倍=扩大到两倍，10 倍=扩大到十倍。"));
-        var resourceTip = new ToolTip();
-        _resourceAll = new CheckBox { Text = "全部资源使用当前倍数", AutoSize = true, ForeColor = TextPrimary, Checked = false };
-        resourceTip.SetToolTip(_resourceAll, "勾选后，保存时会把所有已识别资源点的最大上限和当前数量一起按顶部倍数修改。未勾选时只处理左侧选中的资源规模。");
-        _resourceAll.CheckedChanged += (_, _) =>
-        {
-            if (!_loadingResourceInputs)
-            {
-                _pendingAllResources = _resourceAll.Checked;
-                if (_resourceAll.Checked) _pendingAllResourceMultiplier = _selectedMultiplier;
-            }
-            if (_resourceAll?.Checked == true)
-            {
-                if (_resourceGrid is not null) _resourceGrid.Enabled = false;
-            }
-            else
-            {
-                if (_resourceGrid is not null) _resourceGrid.Enabled = true;
-                if (_resourceGrid?.CurrentRow?.Tag is HeroEditorResourceRow item) SelectResourceRow(item);
-            }
-            if (!_loadingResourceInputs) MarkDirty();
-        };
-        right.Controls.Add(FormLine("批量设置", _resourceAll, ""));
-        right.Controls.Add(InlineSecondaryLabel("未勾选时，只修改左侧选中的资源和规模；勾选后所有资源都使用当前倍数。修改只会暂存，点击顶部“保存修改”才写入。", 44));
-        var actions = ActionBar();
-        actions.Controls.Add(SmallButton("读取资源", async (_, _) => await RunReadOnlyAsync("--list-resources")));
-        actions.Controls.Add(SmallButton("预览", async (_, _) => await PreviewResourceAsync()));
-        right.Controls.Add(actions);
-        _resourceGrid.SelectionChanged += (_, _) =>
-        {
-            if (_resourceGrid.CurrentRow?.Tag is HeroEditorResourceRow item)
-            {
-                SelectResourceRow(item);
-            }
-        };
-        PopulateResourceGrid(Array.Empty<HeroEditorResourceRow>());
-        split.Panel2.Controls.Add(right);
-        return split;
-    }
-
     private Control BuildBuildingsPage()
     {
-        var page = new SplitContainer
+        var page = new Panel
         {
             Dock = DockStyle.Fill,
-            Orientation = Orientation.Horizontal,
-            SplitterWidth = 6,
             BackColor = Background,
-            BorderStyle = BorderStyle.None
-        };
-        page.SizeChanged += (_, _) => ConfigureHorizontalSplit(page);
-        page.HandleCreated += (_, _) =>
-        {
-            try
-            {
-                page.BeginInvoke((Action)(() => ConfigureHorizontalSplit(page)));
-            }
-            catch (ObjectDisposedException)
-            {
-                // 窗口关闭过程中不再调整分栏。
-            }
-            catch (InvalidOperationException)
-            {
-                // 控件尚未进入消息循环时，SizeChanged 会在布局完成后再次触发。
-            }
+            Padding = new Padding(28, 28, 28, 28)
         };
 
-        var resources = BuildResourcesPage();
-        resources.Dock = DockStyle.Fill;
-        page.Panel1.Controls.Add(resources);
-        var warehouses = BuildWarehouseSection();
-        warehouses.Dock = DockStyle.Fill;
-        page.Panel2.Controls.Add(warehouses);
-        return page;
-    }
-
-    private Control BuildWarehouseSection()
-    {
-        var split = NewEditorSplit();
-        var left = new Panel { Dock = DockStyle.Fill, BackColor = Surface, Padding = new Padding(10) };
-        left.Paint += DrawBorder;
-        _buildingSearch = SearchBox("搜索辎重库、粮仓、军械库");
-        _buildingSearch.TextChanged += (_, _) => FilterGrid(_buildingGrid, _buildingSearch.Text);
-        _buildingGrid = CreateGrid(("建筑", 190), ("储存类别", 120), ("当前上限", 240));
-        _buildingGrid.Dock = DockStyle.Fill;
-        _buildingGrid.Margin = new Padding(0, 8, 0, 0);
-        left.Controls.Add(_buildingGrid);
-        left.Controls.Add(_buildingSearch);
-        split.Panel1.Controls.Add(left);
-
-        var right = EditorPanel();
-        right.Controls.Add(PageHeading("仓库", "只修改真正仓库的储存上限"));
-        _buildingSelectedLabel = ValueLabel("未选择建筑");
-        right.Controls.Add(FormLine("当前建筑", _buildingSelectedLabel, ""));
-        _buildingCurrentStateLabel = SecondaryLabel("当前上限：尚未读取");
-        _buildingCurrentStateLabel.Dock = DockStyle.Top;
-        _buildingCurrentStateLabel.Height = 46;
-        right.Controls.Add(_buildingCurrentStateLabel);
-        right.Controls.Add(InlineSecondaryLabel("顶部选择 2 倍、5 倍或 10 倍后，会按每座建筑自己的当前上限计算；只会修改已经存在的储存类别。"));
-
-        var buildingTip = new ToolTip();
-        _buildingAll = new CheckBox
+        var rows = new TableLayoutPanel
         {
-            Text = "全部仓库使用当前倍数",
+            Dock = DockStyle.Top,
             AutoSize = true,
-            ForeColor = TextPrimary,
-            BackColor = Background,
-            Checked = true
+            ColumnCount = 2,
+            RowCount = 2,
+            BackColor = Color.Transparent,
+            Padding = new Padding(0)
         };
-        buildingTip.SetToolTip(
-            _buildingAll,
-            "保存时同时处理所有辎重库、粮仓和军械库；每座建筑按自己的当前上限计算，不会给没有的储存类别补数据。");
-        _buildingAll.CheckedChanged += (_, _) =>
-        {
-            _pendingBuildingStorage = _buildingAll.Checked && _selectedMultiplier != 1m;
-            _pendingBuildingMultiplier = _selectedMultiplier;
-            MarkDirty();
-        };
-        right.Controls.Add(FormLine("修改范围", _buildingAll, ""));
-        right.Controls.Add(InlineSecondaryLabel("仓库包括：辎重库、粮仓、军械库。保存修改前会先弹出确认；本页修改只暂存，不会立即写入。", 44));
+        rows.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        rows.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
+        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
 
-        var actions = ActionBar();
-        actions.Controls.Add(SmallButton("读取建筑", async (_, _) => await RunReadOnlyAsync("--list-building-storage")));
-        actions.Controls.Add(SmallButton("预览", async (_, _) => await PreviewBuildingAsync()));
-        right.Controls.Add(actions);
-        _buildingGrid.SelectionChanged += (_, _) =>
+        _resourceBatchMultiplier = BatchMultiplierBox();
+        _resourceBatchMultiplier.ValueChanged += (_, _) =>
         {
-            if (_buildingGrid.CurrentRow?.Tag is BuildingStorageListItem item)
-            {
-                SelectBuildingRow(item);
-            }
+            if (!_loadingBatchInputs) StageResourceBatchMultiplier(_resourceBatchMultiplier.Value);
         };
-        PopulateBuildingGrid(Array.Empty<BuildingStorageListItem>());
-        split.Panel2.Controls.Add(right);
-        return split;
+        _buildingBatchMultiplier = BatchMultiplierBox();
+        _buildingBatchMultiplier.ValueChanged += (_, _) =>
+        {
+            if (!_loadingBatchInputs) StageBuildingBatchMultiplier(_buildingBatchMultiplier.Value);
+        };
+
+        rows.Controls.Add(BatchMultiplierLabel("矿产（几倍）"), 0, 0);
+        rows.Controls.Add(_resourceBatchMultiplier, 1, 0);
+        rows.Controls.Add(BatchMultiplierLabel("仓库（几倍）"), 0, 1);
+        rows.Controls.Add(_buildingBatchMultiplier, 1, 1);
+        page.Controls.Add(rows);
+        return page;
     }
 
     private Control BuildPlayerPage()
@@ -649,153 +506,6 @@ internal sealed class HeroEditorForm : Form
         return page;
     }
 
-    private Control BuildDonationPage()
-    {
-        var page = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Background,
-            AutoScroll = true,
-            Padding = new Padding(18)
-        };
-
-        var content = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            ColumnCount = 1,
-            RowCount = 4,
-            BackColor = Background,
-            Padding = new Padding(0)
-        };
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 470));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
-
-        content.Controls.Add(PageHeading("捐赠", ""), 0, 0);
-        content.Controls.Add(SecondaryLabel("如果这个工具对你有帮助，欢迎自愿支持。捐赠不会影响任何功能，感谢你的鼓励。"), 0, 1);
-
-        var codes = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 1,
-            BackColor = Background,
-            Padding = new Padding(0, 8, 0, 8)
-        };
-        codes.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 360));
-        codes.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 360));
-        codes.Controls.Add(DonationCodeCard("微信支付", "donation-wechat.png", "二维码待添加"), 0, 0);
-        codes.Controls.Add(DonationCodeCard("支付宝", "donation-alipay.jpg", "二维码待添加"), 1, 0);
-        content.Controls.Add(codes, 0, 2);
-
-        var contact = new Label
-        {
-            Dock = DockStyle.Fill,
-            Text = "联系 QQ：35611294",
-            ForeColor = TextPrimary,
-            Font = new Font("Microsoft YaHei UI", 10.5F, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft,
-            Padding = new Padding(4, 0, 0, 0)
-        };
-        content.Controls.Add(contact, 0, 3);
-        page.Controls.Add(content);
-        return page;
-    }
-
-    private static Control DonationCodeCard(string title, string imageFileName, string placeholder)
-    {
-        var card = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 2,
-            BackColor = Surface,
-            Margin = new Padding(0, 0, 12, 0),
-            Padding = new Padding(10)
-        };
-        card.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        card.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        card.Paint += DrawBorder;
-
-        var heading = new Label
-        {
-            Dock = DockStyle.Fill,
-            Text = title,
-            ForeColor = TextPrimary,
-            Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleCenter
-        };
-        card.Controls.Add(heading, 0, 0);
-
-        var image = LoadDonationImage(imageFileName);
-        if (image is not null)
-        {
-            var code = new PictureBox
-            {
-                Dock = DockStyle.Fill,
-                Image = image,
-                BackColor = Background,
-                BorderStyle = BorderStyle.FixedSingle,
-                SizeMode = PictureBoxSizeMode.Zoom,
-                Cursor = Cursors.Hand
-            };
-            var tip = new ToolTip();
-            tip.SetToolTip(code, "双击查看大图");
-            code.DoubleClick += (_, _) => OpenDonationImage(imageFileName);
-            card.Controls.Add(code, 0, 1);
-        }
-        else
-        {
-            var code = new Label
-            {
-                Dock = DockStyle.Fill,
-                Text = placeholder,
-                ForeColor = TextMuted,
-                BackColor = Background,
-                BorderStyle = BorderStyle.FixedSingle,
-                TextAlign = ContentAlignment.MiddleCenter
-            };
-            card.Controls.Add(code, 0, 1);
-        }
-        return card;
-    }
-
-    private static Image? LoadDonationImage(string fileName)
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, "Assets", fileName);
-        if (!File.Exists(path)) return null;
-        try
-        {
-            using var stream = File.OpenRead(path);
-            using var source = Image.FromStream(stream);
-            return new Bitmap(source);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static void OpenDonationImage(string fileName)
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, "Assets", fileName);
-        if (!File.Exists(path)) return;
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = path,
-                UseShellExecute = true
-            });
-        }
-        catch
-        {
-            // 打开大图失败不影响捐赠页和修改功能。
-        }
-    }
-
     private Control BuildStatusBar()
     {
         var status = new StatusStrip
@@ -823,12 +533,8 @@ internal sealed class HeroEditorForm : Form
                 case "units":
                     await LoadUnitChoicesAsync(cancellation.Token);
                     break;
-                case "resources":
-                    await LoadResourceChoicesAsync(cancellation.Token);
-                    break;
                 case "buildings":
-                    await LoadResourceChoicesAsync(cancellation.Token);
-                    await LoadBuildingChoicesAsync(cancellation.Token);
+                    // 建筑页只有两个批量倍数输入框，不读取或展示资源/仓库明细。
                     break;
                 case "player":
                     await LoadPlayerChoicesAsync(cancellation.Token);
@@ -957,66 +663,6 @@ internal sealed class HeroEditorForm : Form
         {
             _loadingUnitInputs = false;
             AppendLog("单位属性读取失败：" + ex.Message);
-        }
-    }
-
-    private async Task LoadResourceChoicesAsync(CancellationToken cancellationToken)
-    {
-        if (_resourceGrid is null || string.IsNullOrWhiteSpace(_slotPath) || _busy) return;
-        try
-        {
-            var result = await RunCliAsync(BuildCliArgs("--list-resources", "--json"), cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            var payload = ParseCliJson<ResourceListResponse>(result, "资源目录");
-            _resourceInitialCapacities.Clear();
-            _resourceInitialAmounts.Clear();
-            var rows = payload.Nodes
-                .Select(item => new HeroEditorResourceRow(
-                    item.Label,
-                    item.Category,
-                    item.ConfigId,
-                    item.SizeLabel,
-                    item.NodeCount,
-                    item.Capacity,
-                    item.CurrentAmount))
-                .ToList();
-            foreach (var item in rows)
-            {
-                _resourceInitialCapacities[GetResourceEditKey(item.Category, item.ConfigId)] = item.Capacity;
-                _resourceInitialAmounts[GetResourceEditKey(item.Category, item.ConfigId)] = item.CurrentAmount;
-            }
-            cancellationToken.ThrowIfCancellationRequested();
-            PopulateResourceGrid(rows);
-            if (_selectedMultiplier != 1m) ApplyMultiplierToCurrentPage();
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            AppendLog("资源目录读取失败：" + ex.Message);
-        }
-    }
-
-    private async Task LoadBuildingChoicesAsync(CancellationToken cancellationToken)
-    {
-        if (_buildingGrid is null || string.IsNullOrWhiteSpace(_slotPath) || _busy) return;
-        try
-        {
-            var result = await RunCliAsync(BuildCliArgs("--list-building-storage", "--json"), cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            _buildingScan = ParseCliJson<BuildingStorageListResponse>(result, "建筑目录");
-            PopulateBuildingGrid(_buildingScan.Buildings);
-            if (_selectedMultiplier != 1m) ApplyMultiplierToCurrentPage();
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            AppendLog("建筑目录读取失败：" + ex.Message);
         }
     }
 
@@ -1167,39 +813,6 @@ internal sealed class HeroEditorForm : Form
         return args;
     }
 
-    private async Task PreviewResourceAsync()
-    {
-        if (!EnsureSlot() || !EnsureResourceSelection()) return;
-        var allResources = _resourceAll?.Checked == true;
-        var category = allResources ? "*" : _selectedResourceCategory;
-        var configId = allResources ? null : _selectedResourceConfigId;
-        var args = BuildResourceArgs(category, configId, _selectedMultiplier, true);
-        await RunReadOnlyAsync(args.ToArray());
-        var scope = allResources
-            ? "全部资源、所有规模"
-            : $"{ResourceScanner.GetCategoryLabel(category)} · {_selectedResourceSizeLabel}";
-        SetDirtySummary($"{scope} · 上限 × {FormatMultiplier(_selectedMultiplier)}");
-    }
-
-    private async Task PreviewBuildingAsync()
-    {
-        if (!EnsureSlot()) return;
-        if (_buildingAll?.Checked != true)
-        {
-            MessageBox.Show("请勾选“全部仓库使用当前倍数”。", "尚未选择修改范围", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-
-        var args = new[]
-        {
-            "--building-multiplier",
-            _selectedMultiplier.ToString("0.##", CultureInfo.InvariantCulture),
-            "--dry-run"
-        };
-        await RunReadOnlyAsync(args);
-        SetDirtySummary($"全部仓库 · 上限 × {FormatMultiplier(_selectedMultiplier)}");
-    }
-
     private static List<string> BuildResourceArgs(string category, int? configId, decimal multiplier, bool preview)
     {
         var args = new List<string>
@@ -1210,14 +823,6 @@ internal sealed class HeroEditorForm : Form
         if (configId.HasValue) { args.Add("--resource-config"); args.Add(configId.Value.ToString()); }
         if (preview) args.Add("--dry-run");
         return args;
-    }
-
-    private bool EnsureResourceSelection()
-    {
-        if (_resourceAll?.Checked == true) return true;
-        if (_selectedResourceConfigId.HasValue) return true;
-        MessageBox.Show("请先读取资源并在左侧选择一种资源规模，或勾选“全部资源使用当前倍数”。", "尚未选择资源规模", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        return false;
     }
 
     private async Task PreviewPlayerAsync()
@@ -1277,15 +882,6 @@ internal sealed class HeroEditorForm : Form
         {
             operations.Add(BuildResourceArgs("*", null, _pendingAllResourceMultiplier, false).Append("--yes").ToArray());
         }
-        else
-        {
-            foreach (var edit in _pendingResourceEdits.Values
-                         .OrderBy(edit => edit.Category, StringComparer.OrdinalIgnoreCase)
-                         .ThenBy(edit => edit.ConfigId))
-            {
-                operations.Add(BuildResourceArgs(edit.Category, edit.ConfigId, edit.Multiplier, false).Append("--yes").ToArray());
-            }
-        }
 
         if (_pendingBuildingStorage)
         {
@@ -1322,9 +918,8 @@ internal sealed class HeroEditorForm : Form
     {
         var parts = new List<string>();
         if (_pendingUnitEdits.Count > 0) parts.Add($"单位属性 {_pendingUnitEdits.Count:N0} 项");
-        if (_pendingAllResources) parts.Add($"全部资源上限 × {FormatMultiplier(_pendingAllResourceMultiplier)}");
-        else if (_pendingResourceEdits.Count > 0) parts.Add($"资源 {_pendingResourceEdits.Count:N0} 项（按上限倍数）");
-        if (_pendingBuildingStorage) parts.Add($"全部真正仓库上限 × {FormatMultiplier(_pendingBuildingMultiplier)}");
+        if (_pendingAllResources) parts.Add($"全部矿产 × {FormatMultiplier(_pendingAllResourceMultiplier)}");
+        if (_pendingBuildingStorage) parts.Add($"全部仓库 × {FormatMultiplier(_pendingBuildingMultiplier)}");
         if (_pendingPlayerEdits.Count > 0) parts.Add($"玩家属性 {_pendingPlayerEdits.Count:N0} 项");
         if (_pendingAdvancedEdits.Count > 0) parts.Add($"高级功能 {_pendingAdvancedEdits.Count:N0} 项");
         return parts.Count == 0 ? "无" : string.Join("、", parts);
@@ -1333,20 +928,23 @@ internal sealed class HeroEditorForm : Form
     private void ClearPendingEdits()
     {
         _pendingUnitEdits.Clear();
-        _pendingResourceEdits.Clear();
         _pendingPlayerEdits.Clear();
         _pendingAdvancedEdits.Clear();
         _pendingAllResources = false;
         _pendingAllResourceMultiplier = 1m;
         _pendingBuildingStorage = false;
         _pendingBuildingMultiplier = 1m;
-        _buildingScan = null;
-        _selectedBuildingKey = null;
+        _loadingBatchInputs = true;
+        try
+        {
+            if (_resourceBatchMultiplier is not null) _resourceBatchMultiplier.Value = 1m;
+            if (_buildingBatchMultiplier is not null) _buildingBatchMultiplier.Value = 1m;
+        }
+        finally
+        {
+            _loadingBatchInputs = false;
+        }
         _unitChangedAttributes.Clear();
-        var previousLoading = _loadingResourceInputs;
-        _loadingResourceInputs = true;
-        if (_resourceAll is not null) _resourceAll.Checked = false;
-        _loadingResourceInputs = previousLoading;
     }
 
     private static List<string> BuildAdvancedArgs((string Kind, string Attribute, string Unit) operation, decimal value, bool preview)
@@ -1618,13 +1216,6 @@ internal sealed class HeroEditorForm : Form
     private static string FormatMultiplier(decimal multiplier) =>
         multiplier.ToString("0.##", CultureInfo.InvariantCulture) + "倍";
 
-    private static string FormatResourceValue(int rawValue)
-    {
-        return rawValue > 0 && rawValue % 256 == 0
-            ? (rawValue / 256).ToString("N0", CultureInfo.InvariantCulture)
-            : rawValue.ToString("N0", CultureInfo.InvariantCulture);
-    }
-
     private void ResetMultiplierSelection()
     {
         _loadingMultiplier = true;
@@ -1650,6 +1241,13 @@ internal sealed class HeroEditorForm : Form
         ApplyMultiplierToCurrentPage();
     }
 
+    private void UpdateMultiplierToolbarVisibility(string? page)
+    {
+        var visible = !string.Equals(page, "buildings", StringComparison.OrdinalIgnoreCase);
+        _multiplierLabel.Visible = visible;
+        _multiplierPicker.Visible = visible;
+    }
+
     private void ApplyMultiplierToCurrentPage()
     {
         if (_busy || _tabs is null) return;
@@ -1659,12 +1257,8 @@ internal sealed class HeroEditorForm : Form
             case "units":
                 ApplyUnitMultiplier();
                 break;
-            case "resources":
-                ApplyResourceMultiplier();
-                break;
             case "buildings":
-                ApplyResourceMultiplier();
-                ApplyBuildingMultiplier();
+                // 建筑页由“矿产（倍数）”和“仓库（倍数）”两个输入框直接暂存。
                 break;
             case "player":
                 ApplyPlayerMultiplier();
@@ -1675,25 +1269,26 @@ internal sealed class HeroEditorForm : Form
         }
     }
 
-    private void ApplyResourceMultiplier()
+    private void StageResourceBatchMultiplier(decimal multiplier)
     {
-        if (_resourceAll?.Checked == true)
+        if (multiplier == 1m)
+        {
+            _pendingAllResources = false;
+            _pendingAllResourceMultiplier = 1m;
+        }
+        else
         {
             _pendingAllResources = true;
-            _pendingAllResourceMultiplier = _selectedMultiplier;
-            MarkDirty();
-            return;
+            _pendingAllResourceMultiplier = multiplier;
         }
 
-        if (_selectedResourceConfigId.HasValue) StageResourceMultiplier();
+        MarkDirty();
     }
 
-    private void ApplyBuildingMultiplier()
+    private void StageBuildingBatchMultiplier(decimal multiplier)
     {
-        if (_buildingAll?.Checked != true) return;
-
-        _pendingBuildingStorage = _selectedMultiplier != 1m;
-        _pendingBuildingMultiplier = _selectedMultiplier;
+        _pendingBuildingStorage = multiplier != 1m;
+        _pendingBuildingMultiplier = multiplier;
         MarkDirty();
     }
 
@@ -1804,32 +1399,6 @@ internal sealed class HeroEditorForm : Form
         MarkDirty();
     }
 
-    private void StageResourceMultiplier()
-    {
-        if (_resourceAll?.Checked == true) return;
-        var key = GetResourceEditKey(_selectedResourceCategory, _selectedResourceConfigId);
-        var hasCapacity = _resourceInitialCapacities.TryGetValue(key, out var capacity);
-        var hasCurrent = _resourceInitialAmounts.TryGetValue(key, out var currentAmount);
-        var hasOriginal = hasCapacity && hasCurrent;
-        var unchanged = _selectedMultiplier == 1m
-            && hasOriginal
-            && currentAmount.HasValue
-            && currentAmount.Value == capacity;
-        if (unchanged)
-        {
-            _pendingResourceEdits.Remove(key);
-        }
-        else
-        {
-            _pendingResourceEdits[key] = new PendingResourceEdit(
-                _selectedResourceCategory,
-                _selectedResourceConfigId,
-                _selectedMultiplier);
-        }
-
-        MarkDirty();
-    }
-
     private void StagePlayerInput()
     {
         var attribute = SelectedPlayerAttribute();
@@ -1884,11 +1453,6 @@ internal sealed class HeroEditorForm : Form
         return $"{unitType}\u001F{attribute}\u001F{(single ? instance.ToString(CultureInfo.InvariantCulture) : "all")}";
     }
 
-    private static string GetResourceEditKey(string category, int? configId)
-    {
-        return $"{category}\u001F{(configId?.ToString(CultureInfo.InvariantCulture) ?? "all")}";
-    }
-
     private void RemoveConflictingAdvancedUnitEdits(string unitType, string attribute)
     {
         foreach (var key in _pendingAdvancedEdits.Values
@@ -1929,10 +1493,10 @@ internal sealed class HeroEditorForm : Form
     private bool HasPendingEdits()
     {
         return _pendingUnitEdits.Count > 0
-            || _pendingResourceEdits.Count > 0
             || _pendingPlayerEdits.Count > 0
             || _pendingAdvancedEdits.Count > 0
-            || _pendingAllResources;
+            || _pendingAllResources
+            || _pendingBuildingStorage;
     }
 
     private void UpdateUnitSummary()
@@ -1961,88 +1525,6 @@ internal sealed class HeroEditorForm : Form
         }
         SelectUnitRow(_selectedUnitType);
         FilterGrid(_unitGrid, _unitSearch?.Text ?? string.Empty);
-    }
-
-    private void PopulateResourceGrid(IReadOnlyList<HeroEditorResourceRow> rows)
-    {
-        if (_resourceGrid is null) return;
-        _resourceGrid.Rows.Clear();
-        var source = rows.Count > 0
-            ? rows
-            : ResourceScanner.KnownCategoryLabels
-                .Select(pair => new HeroEditorResourceRow(pair.Value, pair.Key, null, "未读取", 0, 0, null))
-                .ToList();
-        foreach (var item in source)
-        {
-            var count = item.NodeCount > 0 ? $"{item.NodeCount:N0} 处" : "未读取";
-            var row = _resourceGrid.Rows[_resourceGrid.Rows.Add(item.Label, item.SizeLabel, count)];
-            row.Tag = item;
-        }
-        if (source.Count > 0)
-        {
-            var selected = source.FirstOrDefault(item =>
-                item.Category.Equals(_selectedResourceCategory, StringComparison.OrdinalIgnoreCase)
-                && item.ConfigId == _selectedResourceConfigId) ?? source[0];
-            SelectResourceRow(selected);
-        }
-        FilterGrid(_resourceGrid, _resourceSearch?.Text ?? string.Empty);
-    }
-
-    private void PopulateBuildingGrid(IReadOnlyList<BuildingStorageListItem> rows)
-    {
-        if (_buildingGrid is null) return;
-        _buildingGrid.Rows.Clear();
-        foreach (var item in rows)
-        {
-            var row = _buildingGrid.Rows[_buildingGrid.Rows.Add(
-                item.Label,
-                $"{item.ItemCount:N0} 项",
-                item.Current)];
-            row.Tag = item;
-        }
-
-        if (rows.Count > 0)
-        {
-            var selected = rows.FirstOrDefault(item =>
-                item.Key.Equals(_selectedBuildingKey, StringComparison.OrdinalIgnoreCase)) ?? rows[0];
-            SelectBuildingRow(selected);
-        }
-        else
-        {
-            if (_buildingSelectedLabel is not null) _buildingSelectedLabel.Text = "未读取建筑";
-            if (_buildingCurrentStateLabel is not null) _buildingCurrentStateLabel.Text = "当前上限：尚未读取";
-        }
-
-        FilterGrid(_buildingGrid, _buildingSearch?.Text ?? string.Empty);
-    }
-
-    private void SelectBuildingRow(BuildingStorageListItem item)
-    {
-        _selectedBuildingKey = item.Key;
-        if (_buildingSelectedLabel is not null) _buildingSelectedLabel.Text = item.Label;
-        if (_buildingCurrentStateLabel is not null)
-        {
-            _buildingCurrentStateLabel.Text = $"当前上限：{item.Current}（{item.ItemCount:N0} 个现有储存类别）";
-        }
-    }
-
-    private void SelectResourceRow(HeroEditorResourceRow item)
-    {
-        _selectedResourceCategory = item.Category;
-        _selectedResourceConfigId = item.ConfigId;
-        _selectedResourceSizeLabel = item.SizeLabel;
-        if (_resourceSelectedLabel is not null) _resourceSelectedLabel.Text = $"{item.Label} · {item.SizeLabel}";
-        if (_resourceCurrentStateLabel is not null) _resourceCurrentStateLabel.Text = DescribeResourceCurrent(item);
-    }
-
-    private static string DescribeResourceCurrent(HeroEditorResourceRow item)
-    {
-        if (item.NodeCount <= 0) return "当前数量：尚未读取";
-        var count = $"{item.NodeCount:N0} 处";
-        var capacity = FormatResourceValue(item.Capacity);
-        if (!item.CurrentAmount.HasValue) return $"当前数量：各处不同；最大上限：{capacity}（{count}）";
-        var state = item.Capacity > 0 && item.CurrentAmount.Value >= item.Capacity ? "，已满" : string.Empty;
-        return $"当前数量：{FormatResourceValue(item.CurrentAmount.Value)}；最大上限：{capacity}（{count}{state}）";
     }
 
     private void PopulatePlayerGrid(IReadOnlyCollection<string> names, IReadOnlyDictionary<string, string> states)
@@ -2669,6 +2151,26 @@ internal sealed class HeroEditorForm : Form
             Font = new Font("Consolas", 10F)
         };
     }
+
+    private static NumericUpDown BatchMultiplierBox()
+    {
+        var input = NumberBox(1m, 1m, 1_000m, decimalPlaces: 2, increment: 0.5m);
+        input.Width = 180;
+        input.Height = 34;
+        input.ThousandsSeparator = false;
+        input.TextAlign = HorizontalAlignment.Left;
+        input.Margin = new Padding(0, 6, 0, 6);
+        return input;
+    }
+
+    private static Label BatchMultiplierLabel(string text) => new()
+    {
+        Text = text,
+        Dock = DockStyle.Fill,
+        ForeColor = TextPrimary,
+        TextAlign = ContentAlignment.MiddleLeft,
+        Padding = new Padding(0, 0, 12, 0)
+    };
 
     private static DataGridView CreateGrid(params (string Header, int Weight)[] columns)
     {

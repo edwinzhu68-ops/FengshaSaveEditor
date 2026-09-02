@@ -11,8 +11,4 @@
     <RootNamespace>FengshaSaveEditor</RootNamespace>
     <ApplicationIcon Condition="Exists('Assets\fengsha-game.ico')">Assets\fengsha-game.ico</ApplicationIcon>
   </PropertyGroup>
-  <ItemGroup>
-    <None Include="Assets\donation-alipay.jpg" Condition="Exists('Assets\donation-alipay.jpg')" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
-    <None Include="Assets\donation-wechat.png" Condition="Exists('Assets\donation-wechat.png')" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
-  </ItemGroup>
 </Project>
