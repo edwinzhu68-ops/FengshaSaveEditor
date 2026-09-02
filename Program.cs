@@ -60,6 +60,8 @@ internal sealed record PlayerAnalysis(
 
 internal sealed record SlotInfo(string Path, string Name, DateTime LastActivity);
 
+internal sealed record ResourcePatchTarget(int Capacity, int CurrentAmount);
+
 internal static class Program
 {
     private const int DefaultSpeed = 2000;
@@ -601,9 +603,22 @@ internal static class Program
                 $"没有找到匹配的资源点：类别 {category}，ConfigID {(configId?.ToString() ?? "全部")}。当前可用类别：{string.Join("、", available)}。");
         }
 
-        var unchanged = selected.All(node => node.CurrentCapacity == targetAmount && node.CurrentAmount == targetAmount);
+        var safeAllMode = normalizedCategory == "*";
+        var targets = selected.ToDictionary(
+            node => node.RegionStart,
+            node => safeAllMode
+                ? new ResourcePatchTarget(node.CurrentCapacity, Math.Min(targetAmount, node.CurrentCapacity))
+                : new ResourcePatchTarget(targetAmount, targetAmount));
+        var unchanged = selected.All(node =>
+        {
+            var target = targets[node.RegionStart];
+            return node.CurrentCapacity == target.Capacity && node.CurrentAmount == target.CurrentAmount;
+        });
         var mode = lockMode ? "大储量/锁定模式" : "指定数量模式";
-        Console.WriteLine($"目标：将 {selected.Count} 个{ResourceScanner.GetCategoryLabel(normalizedCategory)}资源点的容量和当前数量设为 {targetAmount:N0}（{mode}）。");
+        var targetDescription = safeAllMode
+            ? $"保留每个资源点原有最大容量，当前数量补至 {targetAmount:N0}（不超过各自上限）"
+            : $"容量和当前数量设为 {targetAmount:N0}";
+        Console.WriteLine($"目标：将 {selected.Count} 个{ResourceScanner.GetCategoryLabel(normalizedCategory)}资源点{targetDescription}（{mode}）。");
         if (unchanged)
         {
             Console.WriteLine("匹配的资源点已经是目标值，不需要重新压缩或写入。");
@@ -628,10 +643,11 @@ internal static class Program
         var patchedRaw = (byte[])analysis.Document.Raw.Clone();
         foreach (var node in selected)
         {
+            var target = targets[node.RegionStart];
             BinaryPrimitives.WriteInt32LittleEndian(
-                patchedRaw.AsSpan(4 + node.CapacityValueOffset, 4), targetAmount);
+                patchedRaw.AsSpan(4 + node.CapacityValueOffset, 4), target.Capacity);
             BinaryPrimitives.WriteInt32LittleEndian(
-                patchedRaw.AsSpan(4 + node.ItemValueOffset, 4), targetAmount);
+                patchedRaw.AsSpan(4 + node.ItemValueOffset, 4), target.CurrentAmount);
         }
 
         var levelPath = Path.Combine(slot, "Level.sav");
@@ -641,17 +657,21 @@ internal static class Program
             var candidate = analysis.Container.Recompress(patchedRaw, oodle);
             WriteDurable(tempPath, candidate);
             var candidateAnalysis = AnalyzeLevelFile(tempPath, oodle);
-            ValidateResourceCandidate(analysis, candidateAnalysis, patchedRaw, selected, targetAmount);
+            ValidateResourceCandidate(analysis, candidateAnalysis, patchedRaw, selected, targets);
             Console.WriteLine($"候选文件校验通过：{candidate.Length:N0} 字节，CRC32 0x{candidateAnalysis.Container.ActualPayloadCrc:X8}。");
 
             WarnIfGameRunning();
             File.Move(tempPath, levelPath, overwrite: true);
             var finalAnalysis = AnalyzeLevelFile(levelPath, oodle);
-            ValidateResourceCandidate(analysis, finalAnalysis, patchedRaw, selected, targetAmount);
+            ValidateResourceCandidate(analysis, finalAnalysis, patchedRaw, selected, targets);
             Console.WriteLine();
             PrintResourceAnalysis(finalAnalysis, "写回后回读");
             Console.WriteLine("资源修改成功：匹配的全部资源点已写回，并通过完整解压回读。");
-            if (lockMode)
+            if (safeAllMode)
+            {
+                Console.WriteLine("说明：全部资源模式会保留每种资源原有最大容量，仅把当前数量补到目标值；容量较小的资源点按自身上限处理，避免游戏加载异常。");
+            }
+            else if (lockMode)
             {
                 Console.WriteLine("说明：这是把容量和当前数量写成固定大值；采集后游戏仍可能扣减。下次保存后再次运行即可重新补满。");
             }
@@ -898,7 +918,7 @@ internal static class Program
         LevelAnalysis candidate,
         byte[] expectedRaw,
         IReadOnlyList<ResourceNodeEntry> selected,
-        int targetAmount)
+        IReadOnlyDictionary<int, ResourcePatchTarget> targets)
     {
         if (candidate.Scan.ResourceSaveIdFieldCount != original.Scan.ResourceSaveIdFieldCount
             || candidate.Scan.CandidateRecordCount != original.Scan.CandidateRecordCount
@@ -915,17 +935,18 @@ internal static class Program
 
         foreach (var expected in selected)
         {
+            var target = targets[expected.RegionStart];
             var actual = candidate.Scan.Nodes.FirstOrDefault(node =>
                 node.RegionStart == expected.RegionStart
                 && node.Category.Equals(expected.Category, StringComparison.OrdinalIgnoreCase)
                 && node.ConfigId == expected.ConfigId
                 && node.ResourceSaveId == expected.ResourceSaveId);
             if (actual is null
-                || actual.CurrentCapacity != targetAmount
-                || actual.CurrentAmount != targetAmount)
+                || actual.CurrentCapacity != target.Capacity
+                || actual.CurrentAmount != target.CurrentAmount)
             {
                 throw new InvalidDataException(
-                    $"候选存档中资源点 0x{expected.RegionStart:X} 未达到目标数量，拒绝写回。");
+                    $"候选存档中资源点 0x{expected.RegionStart:X} 未达到安全目标数量，拒绝写回。");
             }
         }
     }
@@ -1599,7 +1620,7 @@ internal static class Program
         Console.WriteLine("  --resource C    选择资源类别；支持 IronOre/铁矿、Jujube/枣子林、HuntingAnimal/狩猎区域，也支持 all/全部。");
         Console.WriteLine("  --resource-amount N  把匹配资源点的容量和当前数量都设为 N。");
         Console.WriteLine("  --resource-lock  使用 9999999 的大储量模式；这是存档补满，不是常驻内存锁定。");
-        Console.WriteLine("  图形界面可勾选“全部资源统一为 99,999”，一次修改所有类别和所有规模；采集后仍可能减少。");
+        Console.WriteLine("  图形界面可勾选“全部资源补至 99,999”，会保留每种资源自己的最大容量；采集后仍可能减少。");
         Console.WriteLine("  --resource-config N  只处理指定 ConfigID 的资源档位；不填则处理该类别全部档位。");
         Console.WriteLine("  --unit U         选择单位；支持民夫、兵种名称、自有兵种或 all/全部。");
         Console.WriteLine("                  自有兵种只筛选民夫、常规兵种和攻城器械，不包含野兽、建筑、城防设施。");
