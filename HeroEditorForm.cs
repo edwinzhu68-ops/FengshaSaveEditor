@@ -100,6 +100,10 @@ internal sealed class HeroEditorForm : Form
     private decimal _pendingBuildingMultiplier = 1m;
     private NumericUpDown? _resourceBatchMultiplier;
     private NumericUpDown? _buildingBatchMultiplier;
+    private Label? _buildingReadbackLabel;
+    private ToolTip? _buildingReadbackTip;
+    private ResourceListResponse? _resourceReadback;
+    private BuildingStorageListResponse? _buildingReadback;
     private bool _loadingBatchInputs;
 
     private DataGridView? _playerGrid;
@@ -412,6 +416,17 @@ internal sealed class HeroEditorForm : Form
         rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
 
+        _buildingReadbackLabel = SecondaryLabel("当前存档：尚未读取");
+        _buildingReadbackLabel.Dock = DockStyle.Top;
+        _buildingReadbackLabel.Height = 34;
+        _buildingReadbackTip = new ToolTip
+        {
+            AutoPopDelay = 12_000,
+            InitialDelay = 350,
+            ReshowDelay = 100,
+            ShowAlways = true
+        };
+
         _resourceBatchMultiplier = BatchMultiplierBox();
         _resourceBatchMultiplier.ValueChanged += (_, _) =>
         {
@@ -420,6 +435,10 @@ internal sealed class HeroEditorForm : Form
         _resourceBatchMultiplier.TextChanged += (_, _) =>
         {
             if (!_loadingBatchInputs) UpdateGlobalStatus();
+        };
+        _resourceBatchMultiplier.Validated += (_, _) =>
+        {
+            if (!_loadingBatchInputs) StageResourceBatchMultiplier(_resourceBatchMultiplier.Value);
         };
         _buildingBatchMultiplier = BatchMultiplierBox();
         _buildingBatchMultiplier.ValueChanged += (_, _) =>
@@ -430,12 +449,18 @@ internal sealed class HeroEditorForm : Form
         {
             if (!_loadingBatchInputs) UpdateGlobalStatus();
         };
+        _buildingBatchMultiplier.Validated += (_, _) =>
+        {
+            if (!_loadingBatchInputs) StageBuildingBatchMultiplier(_buildingBatchMultiplier.Value);
+        };
 
         rows.Controls.Add(BatchMultiplierLabel("矿产（几倍）"), 0, 0);
         rows.Controls.Add(_resourceBatchMultiplier, 1, 0);
         rows.Controls.Add(BatchMultiplierLabel("仓库（几倍）"), 0, 1);
         rows.Controls.Add(_buildingBatchMultiplier, 1, 1);
         page.Controls.Add(rows);
+        page.Controls.Add(_buildingReadbackLabel);
+        UpdateBuildingReadbackDisplay();
         return page;
     }
 
@@ -542,7 +567,7 @@ internal sealed class HeroEditorForm : Form
                     await LoadUnitChoicesAsync(cancellation.Token);
                     break;
                 case "buildings":
-                    // 建筑页只有两个批量倍数输入框，不读取或展示资源/仓库明细。
+                    await LoadBuildingReadbackAsync(cancellation.Token);
                     break;
                 case "player":
                     await LoadPlayerChoicesAsync(cancellation.Token);
@@ -567,6 +592,143 @@ internal sealed class HeroEditorForm : Form
     {
         if (_tabs.SelectedTab?.Name is string page) await LoadPageAsync(page);
         AppendLog("已重新读取当前页面。");
+    }
+
+    private async Task LoadBuildingReadbackAsync(CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_slotPath) || _busy) return;
+
+        ResourceListResponse? resources = null;
+        BuildingStorageListResponse? warehouses = null;
+        var errors = new List<string>();
+
+        try
+        {
+            var result = await RunCliAsync(
+                BuildCliArgs("--list-resources", "--json"),
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            resources = ParseCliJson<ResourceListResponse>(result, "矿产数据");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            errors.Add("矿产读取失败：" + ex.Message);
+        }
+
+        try
+        {
+            var result = await RunCliAsync(
+                BuildCliArgs("--list-building-storage", "--json"),
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            warehouses = ParseCliJson<BuildingStorageListResponse>(result, "仓库数据");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            errors.Add("仓库读取失败：" + ex.Message);
+        }
+
+        _resourceReadback = resources;
+        _buildingReadback = warehouses;
+        UpdateBuildingReadbackDisplay(errors);
+    }
+
+    private void UpdateBuildingReadbackDisplay(IReadOnlyList<string>? errors = null)
+    {
+        if (_buildingReadbackLabel is null) return;
+
+        var summary = new List<string>();
+        if (_resourceReadback is not null)
+        {
+            var resourceCount = _resourceReadback.Nodes.Sum(item => item.NodeCount);
+            summary.Add($"矿产 {resourceCount:N0} 处");
+        }
+
+        if (_buildingReadback is not null)
+        {
+            foreach (var group in _buildingReadback.Buildings
+                         .GroupBy(item => item.Label, StringComparer.Ordinal)
+                         .OrderBy(group => group.Key, StringComparer.Ordinal))
+            {
+                summary.Add($"{group.Key} {group.Count():N0} 座");
+            }
+        }
+
+        if (summary.Count == 0)
+        {
+            _buildingReadbackLabel.Text = errors is { Count: > 0 }
+                ? "当前存档：读取失败，请点击“重新读取”"
+                : "当前存档：尚未读取";
+        }
+        else
+        {
+            _buildingReadbackLabel.Text = "当前存档：" + string.Join("  ·  ", summary);
+        }
+
+        if (_buildingReadbackTip is null) return;
+        if (_resourceBatchMultiplier is not null)
+        {
+            _buildingReadbackTip.SetToolTip(
+                _resourceBatchMultiplier,
+                _resourceReadback is null
+                    ? "填写本次矿产上限的倍数：1 倍=不修改，2 倍=当前存档上限×2。"
+                    : BuildResourceReadbackTip(_resourceReadback));
+        }
+
+        if (_buildingBatchMultiplier is not null)
+        {
+            _buildingReadbackTip.SetToolTip(
+                _buildingBatchMultiplier,
+                _buildingReadback is null
+                    ? "填写本次仓库上限的倍数：1 倍=不修改，2 倍=当前存档上限×2。"
+                    : BuildBuildingReadbackTip(_buildingReadback));
+        }
+
+        var readbackTip = new List<string>();
+        if (_resourceReadback is not null) readbackTip.Add(BuildResourceReadbackTip(_resourceReadback));
+        if (_buildingReadback is not null) readbackTip.Add(BuildBuildingReadbackTip(_buildingReadback));
+        _buildingReadbackTip.SetToolTip(
+            _buildingReadbackLabel,
+            readbackTip.Count == 0 ? "进入本页后会自动读取当前存档。" : string.Join("\r\n\r\n", readbackTip));
+    }
+
+    private static string BuildResourceReadbackTip(ResourceListResponse response)
+    {
+        var rows = response.Nodes
+            .OrderBy(item => item.Label, StringComparer.Ordinal)
+            .ThenBy(item => item.SizeLabel, StringComparer.Ordinal)
+            .Select(item =>
+                $"{item.Label}（{item.SizeLabel}）：上限 {FormatSavedResourceCapacity(item.Capacity)} × {item.NodeCount:N0} 处")
+            .ToList();
+        return "当前存档已读取：\r\n"
+            + (rows.Count == 0 ? "没有识别到矿产。" : string.Join("\r\n", rows))
+            + "\r\n\r\n输入框填写本次修改倍数：1 倍=不修改。";
+    }
+
+    private static string BuildBuildingReadbackTip(BuildingStorageListResponse response)
+    {
+        var rows = response.Buildings
+            .OrderBy(item => item.Label, StringComparer.Ordinal)
+            .Select(item => $"{item.Label}：{item.Current}")
+            .ToList();
+        return "当前存档已读取：\r\n"
+            + (rows.Count == 0 ? "没有识别到仓库。" : string.Join("\r\n", rows))
+            + "\r\n\r\n输入框填写本次修改倍数：1 倍=不修改。";
+    }
+
+    private static string FormatSavedResourceCapacity(int rawValue)
+    {
+        return rawValue >= 0 && rawValue % 256 == 0
+            ? (rawValue / 256).ToString("N0", CultureInfo.InvariantCulture)
+            : rawValue.ToString("N0", CultureInfo.InvariantCulture);
     }
 
     private async Task ApplyCurrentTabAsync() => await SaveAllPendingAsync();
@@ -877,11 +1039,17 @@ internal sealed class HeroEditorForm : Form
         if (MessageBox.Show(message, "保存修改", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
 
         if (!await RunWriteBatchAsync(operations)) return;
+
+        // 写回成功后先清空暂存状态，再从磁盘重新读取当前页面。
+        // 最后一遍清理是为了防止控件在回读期间触发 ValueChanged，
+        // 把已经写入存档的值错误地重新标记成“待保存”。
         ClearPendingEdits();
         ResetMultiplierSelection();
-        _dirty = false;
         await ReloadCurrentTabAsync();
-        _statusLabel.Text = "修改已保存，回读校验通过";
+        ClearPendingEdits();
+        _dirty = false;
+        UpdateGlobalStatus();
+        _statusLabel.Text = "修改已保存，已重新读取存档";
     }
 
     private List<IReadOnlyList<string>> BuildPendingWriteArgs()
@@ -965,6 +1133,7 @@ internal sealed class HeroEditorForm : Form
             _loadingBatchInputs = false;
         }
         _unitChangedAttributes.Clear();
+        _dirty = false;
     }
 
     private static List<string> BuildAdvancedArgs((string Kind, string Attribute, string Unit) operation, decimal value, bool preview)
@@ -1183,6 +1352,9 @@ internal sealed class HeroEditorForm : Form
             var index = slots.FindIndex(slot => string.Equals(slot.Path, preferred, StringComparison.OrdinalIgnoreCase) || string.Equals(slot.Name, preferred, StringComparison.OrdinalIgnoreCase));
             _slotPicker.SelectedIndex = index >= 0 ? index : slots.Count > 0 ? 0 : -1;
             _slotPath = _slotPicker.SelectedItem is HeroSlotChoice choice ? choice.Path : null;
+            _resourceReadback = null;
+            _buildingReadback = null;
+            UpdateBuildingReadbackDisplay();
             UpdateGlobalStatus();
             _ = LoadPageAsync(_tabs.SelectedTab?.Name ?? "units");
         }
@@ -1196,6 +1368,9 @@ internal sealed class HeroEditorForm : Form
     {
         if (_refreshingSlots) return;
         _slotPath = (_slotPicker.SelectedItem as HeroSlotChoice)?.Path;
+        _resourceReadback = null;
+        _buildingReadback = null;
+        UpdateBuildingReadbackDisplay();
         ClearPendingEdits();
         ResetMultiplierSelection();
         _dirty = false;
@@ -1206,6 +1381,8 @@ internal sealed class HeroEditorForm : Form
     private void UpdateGlobalStatus()
     {
         if (_folderLabel is null) return;
+        SyncBatchInputs();
+        var pending = HasPendingEditsCore();
         var running = IsGameRunning();
         _folderLabel.Text = _slotPath is null ? _saveRoot : _slotPath;
         var files = _slotPath is null ? 0 : CountRequiredFiles(_slotPath);
@@ -1213,8 +1390,9 @@ internal sealed class HeroEditorForm : Form
         _fileStatusLabel.ForeColor = files == 4 ? Green : files >= 2 ? Warning : TextMuted;
         _gameStatusLabel.Text = running ? "游戏运行中 · 请退出后保存" : "游戏未运行";
         _gameStatusLabel.ForeColor = running ? Red : Green;
-        _saveButton.Enabled = !_busy && !running && _slotPath is not null && HasPendingEdits();
-        _statusLabel.Text = _busy ? "正在处理…" : HasPendingEdits() ? running ? "游戏运行中，保存已禁用" : "有待保存的修改" : running ? "游戏运行中，请退出后保存" : "就绪";
+        _dirty = pending;
+        _saveButton.Enabled = !_busy && !running && _slotPath is not null && pending;
+        _statusLabel.Text = _busy ? "正在处理…" : pending ? running ? "游戏运行中，保存已禁用" : "有待保存的修改" : running ? "游戏运行中，请退出后保存" : "就绪";
     }
 
     private void SetDirtySummary(string text)
@@ -1531,13 +1709,17 @@ internal sealed class HeroEditorForm : Form
 
     private bool HasPendingEdits()
     {
+        SyncBatchInputs();
+        return HasPendingEditsCore();
+    }
+
+    private bool HasPendingEditsCore()
+    {
         return _pendingUnitEdits.Count > 0
             || _pendingPlayerEdits.Count > 0
             || _pendingAdvancedEdits.Count > 0
             || _pendingAllResources
-            || _pendingBuildingStorage
-            || (_resourceBatchMultiplier?.Value ?? 1m) != 1m
-            || (_buildingBatchMultiplier?.Value ?? 1m) != 1m;
+            || _pendingBuildingStorage;
     }
 
     private void UpdateUnitSummary()
