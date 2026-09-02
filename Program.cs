@@ -15,7 +15,6 @@ internal sealed class AppOptions
     public string? ResourceCategory { get; set; }
     public int? ResourceAmount { get; set; }
     public decimal? ResourceMultiplier { get; set; }
-    public decimal? BuildingMultiplier { get; set; }
     public int? ResourceConfig { get; set; }
     public string? UnitType { get; set; }
     public int? UnitInstance { get; set; }
@@ -34,7 +33,6 @@ internal sealed class AppOptions
     public bool ListAttributes { get; set; }
     public bool ListUnits { get; set; }
     public bool ListPlayerAttributes { get; set; }
-    public bool ListBuildingStorage { get; set; }
     public bool ResourceLock { get; set; }
     public bool ResourceMax { get; set; }
     public bool ScanRoads { get; set; }
@@ -61,13 +59,6 @@ internal sealed record PlayerAnalysis(
     SaveContainer Container,
     GvasDocument Document,
     PlayerScanResult Scan,
-    string FileSha256);
-
-internal sealed record BuildingStorageAnalysis(
-    string Path,
-    SaveContainer Container,
-    GvasDocument Document,
-    BuildingStorageScanResult Scan,
     string FileSha256);
 
 internal sealed record SlotInfo(string Path, string Name, DateTime LastActivity);
@@ -202,23 +193,6 @@ internal static class Program
 
                     options.ResourceMultiplier = resourceMultiplier;
                     break;
-                case "--building-multiplier":
-                case "--warehouse-multiplier":
-                    if (!decimal.TryParse(
-                            RequireValue(args, ref i, arg),
-                            NumberStyles.Number,
-                            CultureInfo.InvariantCulture,
-                            out var buildingMultiplier)
-                        || buildingMultiplier < MinResourceMultiplier
-                        || buildingMultiplier > MaxResourceMultiplier
-                        || decimal.Truncate(buildingMultiplier) != buildingMultiplier)
-                    {
-                        throw new ArgumentException(
-                            $"--building-multiplier 必须是 {MinResourceMultiplier:0} 到 {MaxResourceMultiplier:0} 之间的整数。 ");
-                    }
-
-                    options.BuildingMultiplier = buildingMultiplier;
-                    break;
                 case "--resource-config":
                     if (!int.TryParse(RequireValue(args, ref i, arg), out var resourceConfig))
                     {
@@ -319,11 +293,6 @@ internal static class Program
                 case "--player-attribute-list":
                     options.ListPlayerAttributes = true;
                     break;
-                case "--list-building-storage":
-                case "--list-buildings":
-                case "--building-list":
-                    options.ListBuildingStorage = true;
-                    break;
                 case "--scan-roads":
                 case "--road-scan":
                     options.ScanRoads = true;
@@ -350,21 +319,20 @@ internal static class Program
             + (options.ListAttributes ? 1 : 0)
             + (options.ListUnits ? 1 : 0)
             + (options.ListPlayerAttributes ? 1 : 0)
-            + (options.ListBuildingStorage ? 1 : 0)
             + (options.ScanRoads ? 1 : 0);
         if (operationCount > 1)
         {
-            throw new ArgumentException("这些操作只能选择一个：--restore（会写入）、--verify、--list、--list-backups、--list-resources、--list-units、--list-attributes、--list-player-attributes、--list-building-storage、--scan-roads。");
+            throw new ArgumentException("这些操作只能选择一个：--restore（会写入）、--verify、--list、--list-backups、--list-resources、--list-units、--list-attributes、--list-player-attributes、--scan-roads。");
         }
 
-        if (options.DryRun && (options.Verify || options.Restore is not null || options.ListSlots || options.ListBackups || options.ListResources || options.ListUnits || options.ListAttributes || options.ListPlayerAttributes || options.ListBuildingStorage || options.ScanRoads))
+        if (options.DryRun && (options.Verify || options.Restore is not null || options.ListSlots || options.ListBackups || options.ListResources || options.ListUnits || options.ListAttributes || options.ListPlayerAttributes || options.ScanRoads))
         {
-            throw new ArgumentException("--dry-run 只用于速度、资源或真正仓库的修改预览。");
+            throw new ArgumentException("--dry-run 只用于速度、单位属性、玩家属性或资源修改预览。");
         }
 
-        if (options.Json && !(options.ListUnits || options.ListAttributes || options.ListResources || options.ListPlayerAttributes || options.ListBuildingStorage))
+        if (options.Json && !(options.ListUnits || options.ListAttributes || options.ListResources || options.ListPlayerAttributes))
         {
-            throw new ArgumentException("--json 只用于单位、单位属性、资源、玩家属性或建筑的只读列表。");
+            throw new ArgumentException("--json 只用于单位、单位属性、资源或玩家属性的只读列表。");
         }
 
         if (options.ResourceAmount.HasValue && options.ResourceCategory is null)
@@ -424,35 +392,6 @@ internal static class Program
             && !options.ResourceMultiplier.HasValue)
         {
             throw new ArgumentException("资源修改需要 --resource-amount N、--resource-multiplier X、--resource-lock 或 --resource-max。");
-        }
-
-        if (options.ListBuildingStorage && options.BuildingMultiplier.HasValue)
-        {
-            throw new ArgumentException("--list-building-storage 不能与 --building-multiplier 同时使用。");
-        }
-
-        if (options.BuildingMultiplier.HasValue
-            && (options.ResourceCategory is not null
-                || options.SpeedSpecified
-                || options.UnitType is not null
-                || options.AttributeName is not null
-                || options.AttributeValue.HasValue
-                || options.PlayerAttributeName is not null
-                || options.PlayerValue.HasValue))
-        {
-            throw new ArgumentException("真正仓库修改不能与单位、玩家或资源修改混用。");
-        }
-
-        if (options.ListBuildingStorage
-            && (options.ResourceCategory is not null
-                || options.SpeedSpecified
-                || options.UnitType is not null
-                || options.AttributeName is not null
-                || options.AttributeValue.HasValue
-                || options.PlayerAttributeName is not null
-                || options.PlayerValue.HasValue))
-        {
-            throw new ArgumentException("--list-building-storage 不能与修改参数混用。");
         }
 
         var genericAttributeOptionCount = (options.UnitType is not null ? 1 : 0)
@@ -556,12 +495,6 @@ internal static class Program
             return 0;
         }
 
-        if (options.BuildingMultiplier.HasValue)
-        {
-            throw new InvalidOperationException(
-                "当前版本不会写入仓库总容量。存档中只识别到仓库内物品上限，修改它不会改变游戏显示的 2,000；已拒绝写入。 ");
-        }
-
         if (options.ListResources)
         {
             var resourceSlot = ResolveSlot(saveRoot, options.Slot);
@@ -575,24 +508,6 @@ internal static class Program
             {
                 PrintResourceAnalysis(AnalyzeLevelFile(Path.Combine(resourceSlot, "Level.sav"), resourceOodle), "资源点只读扫描");
             }
-            return 0;
-        }
-
-        if (options.ListBuildingStorage)
-        {
-            var buildingSlot = ResolveSlot(saveRoot, options.Slot);
-            EnsureLevelSlot(buildingSlot);
-            using var buildingOodle = LoadOodle(options.OodlePath, options.Json);
-            var buildingAnalysis = AnalyzeBuildingStorageFile(Path.Combine(buildingSlot, "Level.sav"), buildingOodle);
-            if (options.Json)
-            {
-                PrintBuildingStorageJson(buildingAnalysis);
-            }
-            else
-            {
-                PrintBuildingStorageAnalysis(buildingAnalysis, "真正仓库只读扫描");
-            }
-
             return 0;
         }
 
@@ -885,44 +800,6 @@ internal static class Program
         }
 
         return checked((int)scaled);
-    }
-
-    private static void ValidateBuildingStorageCandidate(
-        BuildingStorageAnalysis original,
-        BuildingStorageAnalysis candidate,
-        byte[] expectedRaw,
-        IReadOnlyDictionary<int, int> targets)
-    {
-        if (candidate.Scan.StorageFieldCount != original.Scan.StorageFieldCount
-            || candidate.Scan.CandidateRecordCount != original.Scan.CandidateRecordCount
-            || candidate.Scan.SkippedRecordCount != original.Scan.SkippedRecordCount
-            || candidate.Scan.Records.Count != original.Scan.Records.Count
-            || candidate.Scan.ItemCount != original.Scan.ItemCount)
-        {
-            throw new InvalidDataException("候选存档的真正仓库或储存类别数量发生变化，拒绝写回。 ");
-        }
-
-        if (!candidate.Document.Raw.AsSpan().SequenceEqual(expectedRaw))
-        {
-            throw new InvalidDataException("候选存档解压后与预期数据不一致，拒绝写回。 ");
-        }
-
-        var candidateItems = candidate.Scan.Records
-            .SelectMany(record => record.Items)
-            .ToDictionary(entry => entry.ValueOffset);
-        if (candidateItems.Count != targets.Count || !candidateItems.Keys.ToHashSet().SetEquals(targets.Keys))
-        {
-            throw new InvalidDataException("候选存档的储存类别字段位置发生变化，拒绝写回。 ");
-        }
-
-        foreach (var target in targets)
-        {
-            if (candidateItems[target.Key].CurrentCapacity != target.Value)
-            {
-                throw new InvalidDataException(
-                    $"候选存档中位置 0x{target.Key:X} 的仓库上限未达到目标值，拒绝写回。 ");
-            }
-        }
     }
 
     private static int ModifyUnitSlot(
@@ -1258,27 +1135,13 @@ internal static class Program
         PrintUnitAnalysis(analysis, "只读校验");
         var levelAnalysis = AnalyzeLevelFile(Path.Combine(slot, "Level.sav"), oodle);
         PrintResourceAnalysis(levelAnalysis, "资源点只读校验");
-        var buildingVerified = false;
-        try
-        {
-            var buildingAnalysis = AnalyzeBuildingStorageFile(Path.Combine(slot, "Level.sav"), oodle);
-            PrintBuildingStorageAnalysis(buildingAnalysis, "真正仓库只读校验");
-            buildingVerified = true;
-        }
-        catch (InvalidDataException ex)
-        {
-            Console.WriteLine($"真正仓库：未能完成安全识别（{ex.Message}）");
-        }
         if (File.Exists(Path.Combine(slot, "Player.sav")))
         {
             var playerAnalysis = AnalyzePlayerFile(Path.Combine(slot, "Player.sav"), oodle);
             Console.WriteLine($"玩家全局字段：{playerAnalysis.Scan.Entries.Count:N0} 个，文件 CRC32 0x{playerAnalysis.Container.ActualPayloadCrc:X8}（有效）。");
         }
 
-        Console.WriteLine(
-            buildingVerified
-                ? "校验通过：VSOM CRC、所有 Oodle 分块、GVAS 长度/魔数、全部当前民夫、资源点、真正仓库和玩家字段均正常。"
-                : "校验通过：VSOM CRC、所有 Oodle 分块、GVAS 长度/魔数、全部当前民夫、资源点和玩家字段均正常；真正仓库未完成安全识别。");
+        Console.WriteLine("校验通过：VSOM CRC、所有 Oodle 分块、GVAS 长度/魔数、全部当前民夫、资源点和玩家字段均正常。");
     }
 
     private static void ScanRoads(string slot, string? oodlePath)
@@ -1349,15 +1212,6 @@ internal static class Program
         return new LevelAnalysis(path, container, document, scan, Hashing.Sha256File(path));
     }
 
-    private static BuildingStorageAnalysis AnalyzeBuildingStorageFile(string path, OodleNative oodle)
-    {
-        var container = SaveContainer.Load(path);
-        var raw = container.DecompressAll(oodle);
-        var document = GvasDocument.Parse(raw);
-        var scan = BuildingStorageScanner.Scan(document.Gvas);
-        return new BuildingStorageAnalysis(path, container, document, scan, Hashing.Sha256File(path));
-    }
-
     private static UnitMassAnalysis AnalyzeUnitFile(string path, OodleNative oodle)
     {
         var container = SaveContainer.Load(path);
@@ -1418,38 +1272,6 @@ internal static class Program
             Console.WriteLine(
                 $"  {label} [{group.Key.Category}] ConfigID={group.Key.ConfigId}：{group.Count()} 个；容量 {FormatDistribution(group.Select(node => node.CurrentCapacity))}；当前 {FormatDistribution(group.Select(node => node.CurrentAmount))}");
         }
-    }
-
-    private static void PrintBuildingStorageAnalysis(BuildingStorageAnalysis analysis, string title)
-    {
-        Console.WriteLine($"--- {title} ---");
-        Console.WriteLine($"文件：{analysis.Path}");
-        Console.WriteLine($"SHA-256：{analysis.FileSha256}");
-        Console.WriteLine($"大小：{analysis.Container.FileSize:N0} 字节；Oodle 分块：{analysis.Container.Blocks.Count}；解压：{analysis.Container.UncompressedTotal:N0} 字节");
-        Console.WriteLine($"VSOM CRC32：0x{analysis.Container.ActualPayloadCrc:X8}（有效）");
-        Console.WriteLine(
-            $"StorageMaxItems 字段：{analysis.Scan.StorageFieldCount:N0}；结构候选：{analysis.Scan.CandidateRecordCount:N0}；真正仓库：{analysis.Scan.Records.Count:N0}；跳过：{analysis.Scan.SkippedRecordCount:N0}");
-
-        foreach (var group in analysis.Scan.Records
-                     .GroupBy(record => record.BuildingType, StringComparer.OrdinalIgnoreCase)
-                     .OrderBy(group => group.First().BuildingLabel, StringComparer.Ordinal))
-        {
-            var records = group.ToList();
-            var itemCount = records.Sum(record => record.Items.Count);
-            var capacities = records.SelectMany(record => record.Items).Select(item => item.CurrentCapacity);
-            Console.WriteLine(
-                $"  {records[0].BuildingLabel}：{records.Count:N0} 座；现有储存类别 {itemCount:N0} 项；每项上限 {FormatBuildingCapacityDistribution(capacities)}");
-        }
-    }
-
-    private static string FormatBuildingCapacityDistribution(IEnumerable<int> values)
-    {
-        var groups = values
-            .GroupBy(value => value)
-            .OrderBy(group => group.Key)
-            .Select(group => $"{(group.Key == 0 ? "未启用" : BuildingStorageScanner.FormatCapacity(group.Key))}（{group.Count():N0} 项）")
-            .ToList();
-        return groups.Count == 0 ? "无" : string.Join("，", groups);
     }
 
     private static void PrintUnitAttributes(string slot, string? unitType, OodleNative oodle)
@@ -1628,27 +1450,6 @@ internal static class Program
             analysis.Scan.ResourceSaveIdFieldCount,
             analysis.Scan.CandidateRecordCount,
             analysis.Scan.SkippedRecordCount,
-            rows));
-    }
-
-    private static void PrintBuildingStorageJson(BuildingStorageAnalysis analysis)
-    {
-        var rows = analysis.Scan.Records
-            .Select(record => new BuildingStorageListItem(
-                record.ActorPath,
-                record.BuildingLabel,
-                record.BuildingType,
-                record.ActorPath,
-                record.Items.Count,
-                FormatBuildingCapacityDistribution(record.Items.Select(item => item.CurrentCapacity))))
-            .ToList();
-
-        PrintJson(new BuildingStorageListResponse(
-            analysis.Scan.StorageFieldCount,
-            analysis.Scan.CandidateRecordCount,
-            analysis.Scan.SkippedRecordCount,
-            analysis.Scan.Records.Count,
-            analysis.Scan.ItemCount,
             rows));
     }
 
@@ -1888,7 +1689,7 @@ internal static class Program
 
     private static void PrintHelp()
     {
-        Console.WriteLine("烽沙存档修改器 v36");
+        Console.WriteLine("烽沙存档修改器 v37");
         Console.WriteLine();
         Console.WriteLine("双击 FengshaSaveEditor.exe 可进入图形界面。游戏运行中也可写入，但请避免游戏同时保存。");
         Console.WriteLine();
@@ -1902,7 +1703,6 @@ internal static class Program
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --resource all --resource-max --yes");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --resource all --resource-multiplier 100 --yes");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --resource 铁矿 --resource-config 33536 --resource-multiplier 10 --yes");
-        Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --list-building-storage --json");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --list-resources");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --unit 民夫 --attribute 攻击 --value 999 --yes");
         Console.WriteLine("  FengshaSaveEditor.exe --slot 新存档_3 --unit 民夫 --attribute 生命 --value 1000 --yes");
@@ -1925,7 +1725,6 @@ internal static class Program
         Console.WriteLine("  --resource-max       把匹配资源点当前数量补满到各自最大容量，不修改最大容量。");
         Console.WriteLine("  --resource-lock  使用 9999999 的大储量模式；这是存档补满，不是常驻内存锁定。");
         Console.WriteLine("  图形界面可在顶部选择 1/2/5/10/20/50/100 倍；资源页可勾选“全部资源使用当前倍数”。");
-        Console.WriteLine("  --building-multiplier X  当前停用：存档没有游戏显示的仓库总容量字段，避免把物品上限误当成总容量写入。 ");
         Console.WriteLine("  --resource-config N  只处理指定 ConfigID 的资源档位；不填则处理该类别全部档位。");
         Console.WriteLine("  --unit U         选择单位；支持民夫、兵种名称、自有兵种或 all/全部。");
         Console.WriteLine("                  自有兵种只筛选民夫、常规兵种和攻城器械，不包含野兽、建筑、城防设施。");
@@ -1940,9 +1739,8 @@ internal static class Program
         Console.WriteLine("  --list-units     只读列出当前 Mass.sav 中实际发现的单位类型、数量和已知但未出现的模板。");
         Console.WriteLine("  --list-attributes 只读列出 Mass.sav 已确认可修改的单位属性和当前分布。");
         Console.WriteLine("  --list-player-attributes 只读列出 Player.sav 已识别的玩家全局属性和当前分布。");
-        Console.WriteLine("  --list-building-storage 只读列出真正仓库（辎重库、粮仓、军械库）的现有储存类别和上限。");
-        Console.WriteLine("  --json            让上述单位/属性/资源/玩家/建筑列表输出结构化 JSON，供图形界面读取。");
-        Console.WriteLine("  --verify         只读校验 CRC、Oodle 分块、GVAS、全部当前民夫、资源点、真正仓库和玩家字段。");
+        Console.WriteLine("  --json            让上述单位/属性/资源/玩家列表输出结构化 JSON，供图形界面读取。");
+        Console.WriteLine("  --verify         只读校验 CRC、Oodle 分块、GVAS、全部当前民夫、资源点和玩家字段。");
         Console.WriteLine("  --scan-roads     只读检测道路记录；当前不会猜测写道路字段。");
         Console.WriteLine();
         Console.WriteLine("备份位置：所选槽位上两级的 Saved\\FengshaSaveEditorBackups\\。");

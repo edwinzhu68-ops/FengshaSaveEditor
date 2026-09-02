@@ -48,19 +48,3 @@ internal sealed record PlayerListItem(
     string Label,
     int FieldCount,
     string Current);
-
-internal sealed record BuildingStorageListResponse(
-    int StorageFieldCount,
-    int CandidateRecordCount,
-    int SkippedRecordCount,
-    int WarehouseCount,
-    int ItemCount,
-    List<BuildingStorageListItem> Buildings);
-
-internal sealed record BuildingStorageListItem(
-    string Key,
-    string Label,
-    string BuildingType,
-    string ActorPath,
-    int ItemCount,
-    string Current);
